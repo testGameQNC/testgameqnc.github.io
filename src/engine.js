@@ -1434,15 +1434,15 @@ const Y2K = (() => {
       h('button', { class: 'tbtn', text: _t('试玩进度'), onclick: e => titlePanel(panel, _t('试玩进度'), e.currentTarget).append(endingList()) }));
     const trialInfo = h('button', { class: 'tbtn', text: '试玩说明', onclick: e => {
       const body = titlePanel(panel, '千年虫2试玩', e.currentTarget);
-      body.append(h('p', { text: '本试玩版包含序章「六张盘」和第一章「封条」。完成第一章推理板后，试玩结束。' }),
+      body.append(h('p', { text: '欢迎试玩《千年虫 2：未寄出的明天》。' }),
         h('p', { text: '进度自动保存在当前浏览器，与完整版分别保存。可以在手机菜单中导出或导入试玩版存档。' }),
-        h('p', { text: '无需联网。敬请期待完整版本！' }));
+        h('p', { text: '敬请期待完整版本！' }));
     } });
     // 语言切换：存进 meta，然后重新载入（译文在启动时写回数据）
     const langs = h('div', { class: 'langs', role: 'group', 'aria-label': 'Language' });
     langs.hidden = READY.length < 2;
     Object.entries(LANGS).filter(([code]) => READY.includes(code)).forEach(([code, label]) => langs.append(h('button', { class: 'lbtn' + (code === LANG ? ' on' : ''), lang: code, 'aria-pressed': code === LANG ? 'true' : 'false', text: label, onclick: () => { if (code === LANG) return; const m = meta(); m.lang = code; setMeta(m); location.reload(); } })));
-    tl.append(h('div', { class: 'title-topbar' }, trialInfo, langs), h('div', { class: 'title-content' }, clk, h('h1', { html: _t('千年<span>虫</span> 2') }), h('div', { class: 'sub', text: _t('未寄出的明天 · 试玩版') }), h('div', { class: 'trial-scope', text: '序章「六张盘」 · 第一章「封条」' }), menu, panel,
+    tl.append(h('div', { class: 'title-topbar' }, trialInfo, langs), h('div', { class: 'title-content' }, clk, h('h1', { html: _t('千年<span>虫</span> 2') }), h('div', { class: 'sub', text: _t('未寄出的明天 · 试玩版') }), menu, panel,
       h('div', { class: 'foot' }, h('div', { class: 'community', text: _t('QQ群') + '：1130040971' }), h('div', { text: _t('本作纯属虚构 · 建议用电脑上的 Chrome / Edge 打开 · 进度自动保存在本浏览器') }))));
   }
   function hideTitle() { titleOn = false; syncPlayClock(); const tl = $('#title'); tl.hidden = true; tl.innerHTML = ''; tl.classList.remove('panel-open'); window.Y2KStats?.setPlaying(true); showCards(); }
