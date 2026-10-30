@@ -1,0 +1,161 @@
+/* Windows 98 uses the shared classic controls in style.css.
+   The second game's applications and evidence viewers are styled below. */
+.dlg98:not(.dlgph){color:#141414;font:var(--font-98)}
+.dlg98:not(.dlgph)>.titlebar{background:linear-gradient(90deg,var(--w-title),var(--w-title2));color:#fff}
+#icons .icon span{word-break:normal;overflow-wrap:anywhere}
+@media(pointer:coarse),(max-width:960px){
+  .dlg98:not(.dlgph)>.titlebar{height:44px}
+  .dlg98:not(.dlgph)>.titlebar .tbb{width:44px;min-width:44px;height:36px}
+}
+
+/* ---------- 二代：还原点、文件比较、名单、寄出 ---------- */
+/* Title dialogs use the original game's centered modal shell. */
+.panel.title-panel{margin:0;width:min(440px,100%)}
+.title .foot{position:static;margin-top:14px;flex:none;max-width:560px;line-height:1.7}
+.title > .clock,.title > h1,.title > .sub,.title > .menu,.title > .site-stats{flex-shrink:0}
+#desktop.snapmode { background: linear-gradient(rgba(70,60,40,.28), rgba(70,60,40,.28)), var(--desk, #008080); }
+.snapbanner { position: absolute; top: 8px; right: 8px; z-index: 5; display: flex; gap: 8px; align-items: center; border: 1px solid #8a6d1f; background: #fff3c4; color: #3b2f05; font: 12px/1.4 Tahoma, SimSun, sans-serif; padding: 4px 10px; border-radius: 3px; cursor: pointer; box-shadow: 1px 1px 0 rgba(0,0,0,.25); }
+.snapbanner span { color: #7a5b00; text-decoration: underline; }
+#tray.snapmode { color: #7a4b00; font-weight: bold; }
+.wbody > .restore { padding: 12px; display: flex; flex-direction: column; gap: 10px; height: 100%; overflow: auto; }
+.restore-head p { margin: 4px 0 0; color: #333; }
+.restore-list { display: flex; flex-direction: column; background: #fff; border: 1px solid #7f9db9; }
+.restore-row { display: grid; grid-template-columns: 22px 92px 64px 1fr auto; gap: 8px; align-items: center; text-align: left; padding: 7px 10px; border: 0; border-bottom: 1px solid #e3e9f2; background: #fff; color: #000; cursor: pointer; font: 12px/1.5 Tahoma, SimSun, sans-serif; }
+.restore-row:hover { background: #eef4fd; }
+.restore-row.on { background: #dbe8fb; font-weight: bold; }
+.restore-row .rid { color: #1f5fbf; }
+.restore-row .rdesc { color: #333; font-weight: normal; }
+.cmp-pick { display: flex; gap: 6px; align-items: center; padding: 4px; flex-wrap: wrap; }
+.cmp-sel { flex: 1; min-width: 180px; }
+.cmp-task { margin: 6px; padding: 8px 10px; background: #fffbe0; border: 1px solid #d8c06a; color: #222; display: flex; flex-direction: column; gap: 6px; }
+.cmp-task .k { font-size: 11px; color: #8a6d1f; }
+.cmp-hint { background: #ffffe1; border: 1px solid #999; padding: 3px 6px; }
+.cmp-msg { margin: 6px; padding: 6px 10px; background: #eef7ee; border: 1px solid #8fc9a0; color: #1d4f2c; }
+.cmp-wrap { margin: 6px; background: #fff; border: 1px solid #7f9db9; overflow: auto; }
+table.cmp { border-collapse: collapse; width: 100%; table-layout: fixed; font: 13px/1.6 "Courier New", SimSun, monospace; color: #000; }
+table.cmp th { position: sticky; top: 0; background: var(--w-face); border-bottom: 1px solid var(--w-lo); text-align: left; padding: 3px 8px; font-weight: normal; }
+table.cmp td { padding: 1px 8px; white-space: pre-wrap; word-break: break-all; vertical-align: top; border-right: 1px solid #e5e5e5; }
+table.cmp tr.hunk { cursor: pointer; }
+table.cmp tr.chg td { background: #fff4b8; }
+table.cmp tr.del td:first-child { background: #ffd6d6; }
+table.cmp tr.del td:last-child { background: #f3f3f3; }
+table.cmp tr.add td:last-child { background: #d6f5dc; }
+table.cmp tr.add td:first-child { background: #f3f3f3; }
+table.cmp tr.sel td { outline: 2px solid #1f5fbf; outline-offset: -2px; }
+.ph-card.hh.ok { border-left: 3px solid var(--ph-good, #57c08a); }
+.hh-fact { font-size: 13px; color: var(--ph-sub, #8d93a0); margin-top: 4px; }
+.hh-tag { display: inline-block; margin-top: 6px; font-size: 11px; padding: 1px 8px; border-radius: 9px; background: #2a2f39; color: #c9ced8; }
+.hh-tag.yes { background: #1d3b2a; color: #9fe0b8; }
+.hh-tag.no { background: #3b2323; color: #f0b3a8; }
+.hh-call { max-height: 50vh; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.hh-call p { margin: 0; padding: 6px 10px; border-radius: 12px; max-width: 85%; }
+.hh-call p.them { background: #262a31; align-self: flex-start; }
+.hh-call p.me { background: #2c6a4c; align-self: flex-end; }
+.sendout .send-modes { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.send-mode { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid #b9ad94; border-radius: 6px; cursor: pointer; background: #fffaf0; }
+.send-mode.on { border-color: #1f1b14; background: #fff1c9; }
+.send-mode span { display: flex; flex-direction: column; }
+.send-mode small { font: 13px/1.6 var(--font-ph); color: #5d5444; }
+.send-sec { font: bold 14px var(--font-ph); margin: 10px 0 6px; }
+.send-hh { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; font: 13px var(--font-ph); }
+.send-hh label { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.send-hh .hh-tag { margin-top: 0; }
+.chip.src { border-style: dashed; background: #eef4ff; }
+.slot.srcslot { background: rgba(80,120,200,.12); border-bottom-style: dashed; }
+.bank-sep { flex-basis: 100%; font: 12px var(--font-ph); color: #6b6253; margin-top: 4px; }
+.cmp-task { max-height: 34vh; overflow: auto; }
+/* 街区地图 */
+.map-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 8px; border-bottom: 1px solid #c9c3b1; background: #f6f1e2; }
+.map-head span { color: #555; flex: 1 1 220px; font-size: 12px; }
+.map { display: flex; gap: 8px; height: 100%; min-height: 0; padding: 6px; box-sizing: border-box; }
+.map-svg { flex: 1; min-width: 0; overflow: auto; background: #efe9d8; border: 1px solid #a89f86; }
+.mapsvg { display: block; width: 100%; height: auto; min-width: 560px; font-family: SimSun, "Songti SC", serif; }
+.mapsvg .m-road { fill: #fbf8ef; stroke: #b9b09a; }
+.mapsvg .m-block { fill: #ddd5bf; stroke: #b9b09a; }
+.mapsvg .m-river { fill: #a9cbe0; }
+.mapsvg .m-wall { stroke: #4a4436; stroke-width: 5; fill: none; }
+.mapsvg .m-fence { stroke: #4a4436; stroke-width: 2; fill: none; }
+.mapsvg .m-bld { fill: #c7bea6; stroke: #6b6458; }
+.mapsvg .m-green { fill: url(#mhatch); stroke: #7fa865; }
+.mapsvg .m-pencil { stroke: #6f6f6f; stroke-width: 1.4; stroke-dasharray: 4 3; fill: none; }
+.mapsvg text { fill: #3b3528; font-size: 17px; pointer-events: none; }
+.mapsvg text.s { font-size: 14px; fill: #6b6458; }
+.mapsvg text.hand { font-family: "KaiTi", "STKaiti", cursive; fill: #5b5b5b; font-size: 16px; }
+.mapsvg .spot { fill: transparent; cursor: pointer; outline: none; }
+.mapsvg .spot:hover, .mapsvg .spot:focus { fill: rgba(31, 95, 191, .16); stroke: #1f5fbf; stroke-width: 1; }
+.mapsvg .spot.sel { fill: rgba(214, 64, 52, .18); stroke: #d64034; stroke-width: 2; stroke-dasharray: 5 3; }
+.mapsvg .spot.m-house { fill: #f4ecd6; stroke: #8d846c; }
+.mapsvg .spot.m-house.ok { fill: #cfe8cf; stroke: #3f8a52; }
+.mapsvg .spot.m-house:hover { fill: #e4ecf8; }
+.mapsvg .m-tag { font-size: 11px; }
+.mapsvg .pin { cursor: pointer; outline: none; }
+.mapsvg .pin circle { fill: #c0392b; stroke: #fff; stroke-width: 1.5; }
+.mapsvg .pin:hover circle, .mapsvg .pin:focus circle { fill: #1f5fbf; }
+.mapsvg .pin text { fill: #fff; font: bold 9px Tahoma, sans-serif; text-anchor: middle; }
+.map-side { width: 230px; flex: none; overflow: auto; background: #fff; border: 1px solid #7f9db9; padding: 8px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.map-side .k { font-size: 11px; color: #8a6d1f; }
+.map-side .map-doc { text-align: left; white-space: normal; }
+.map-legend { margin-top: auto; border-top: 1px dashed #c9c3b1; padding-top: 6px; color: #555; }
+@media (max-width: 760px) { .map { flex-direction: column; height: auto; } .map-svg { flex: none; height: 56vh; } .map-side { width: auto; } }
+
+/* 录像（移植自三代） */
+/* 手机：选择题（选一帧/选一条日志） */
+.pick-task { border-left: 3px solid #e2b33c; }
+.pick-task .k, .clipcard .k { font-size: 11px; color: var(--ph-sub); }
+.pick-task .hint { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: rgba(255, 255, 255, .06); font-size: 13px; }
+.pick-task .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.pick-msg { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: rgba(80, 160, 110, .18); font-size: 13px; line-height: 1.6; }
+
+/* 素材 */
+.clipcard { display: block; width: 100%; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+.clipcard.new::after { content: "新"; position: absolute; right: 12px; top: 10px; font-size: 11px; color: #ffcf6b; }
+.clipcard { position: relative; }
+.frame { margin: 0 0 10px; padding: 8px; border-radius: 10px; background: #15181d; border: 1px solid transparent; cursor: pointer; }
+.frame.sel { border-color: #e2b33c; box-shadow: 0 0 0 2px rgba(226, 179, 60, .25); }
+.frame .tc { font: 12px/1.4 Consolas, monospace; color: #ffcf6b; margin-bottom: 4px; }
+.frame .shot { min-height: 64px; border-radius: 6px; padding: 10px 12px; display: flex; align-items: center; background: linear-gradient(160deg, #2b3138, #0d0f12 70%); color: #d7dbe0; font-size: 13px; line-height: 1.55; overflow: hidden; }
+.frame .say { margin-top: 6px; font-size: 13px; line-height: 1.6; color: #f1f1f1; }
+.frame .say::before { content: "声音："; color: var(--ph-sub); }
+
+
+/* 坏道修复 */
+.fx { display: flex; gap: 8px; height: 100%; padding: 6px; box-sizing: border-box; }
+.fx-list { width: 200px; flex: none; display: flex; flex-direction: column; gap: 4px; overflow: auto; background: #fff; border: 1px solid #7f9db9; padding: 6px; }
+.fx-list .k { font-size: 11px; color: #8a6d1f; }
+.fx-file { text-align: left; border: 1px solid #c9c9c9; background: #f7f7f7; padding: 5px 6px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; font: 12px/1.4 Tahoma, SimSun, sans-serif; }
+.fx-file.on { border-color: #1f5fbf; background: #e8f0fd; }
+.fx-file.ok b::after { content: '  ✓'; color: #2e8b57; }
+.fx-file span { color: #666; font-size: 11px; }
+.fx-main { flex: 1; min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.fx-dir { font: 12px Consolas, 'Courier New', monospace; color: #333; padding: 2px 6px; }
+.fx-strip { min-height: 30px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding: 6px; background: #fffbe0; border: 1px dashed #d8c06a; }
+.fx-chip { font: 12px Consolas, monospace; background: var(--w-title); color: #fff; padding: 2px 6px; }
+.fx-row { display: flex; gap: 6px; }
+.fx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; }
+.fx-frag { text-align: left; background: #fff; border: 1px solid #a8a8a8; padding: 6px; cursor: pointer; font: 12px/1.55 SimSun, 'Songti SC', serif; color: #222; }
+.fx-frag:hover:not(:disabled) { border-color: #1f5fbf; background: #f3f7fe; }
+.fx-frag.used { opacity: .4; }
+.fx-frag:disabled { cursor: default; }
+.fx-head { display: flex; justify-content: space-between; gap: 6px; font: 11px Consolas, monospace; color: #555; margin-bottom: 4px; }
+.fx-head b { color: #1f5fbf; }
+.fx-text { white-space: pre-wrap; }
+@media (max-width: 760px) { .fx { flex-direction: column; height: auto; } .fx-list { width: auto; max-height: 30vh; } }
+
+/* Light photographic cover; controls keep the series home-page layout. */
+.title { background-size: cover; background-position: 65% center; }
+.title .clock { text-shadow: 0 1px 5px #000; }
+.title .sub { color: #b5b8bd; }
+.title .menu .tbtn { background: rgba(20,23,27,.9); }
+.title .foot { color: #a8aaad; }
+.title .leaderboard-entry { background: #2b2417; }
+
+.media-photo { margin: 6px 0 8px; background: #0c0e10; border: 1px solid #373d45; border-radius: 5px; overflow: hidden; }
+.media-photo-image svg { display: block; width: 100%; height: auto; }
+.photo-zoom { display: block; width: 100%; min-height: 40px; padding: 8px 12px; border: 0; border-top: 1px solid #373d45; background: #22272e; color: #dce0e5; font: 12px/1.4 var(--font-ph); cursor: zoom-in; touch-action: manipulation; }
+.photo-zoom:hover, .photo-zoom:focus-visible { background: #303843; color: #fff; }
+.photo-zoom:focus-visible { outline: 2px solid #e2b33c; outline-offset: -3px; }
+.evidence-photo { margin: 0 0 14px; padding: 0; }
+.evidence-photo svg { display: block; width: 100%; height: auto; border-radius: 4px; }
+.evidence-photo figcaption { text-align: center; color: var(--ph-sub); font-size: 12px; margin-top: 6px; }
+.frame .shot { min-height: 0; background: #20242b; }
+@media (max-width: 700px) { .photo-zoom { min-height: 44px; } }

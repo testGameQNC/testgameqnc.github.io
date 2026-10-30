@@ -1,0 +1,22 @@
+{
+  "assets": {
+    "document-paper": {
+      "file": "assets/photos/document-paper.webp"
+    },
+    "unboxing": {
+      "file": "assets/photos/unboxing.webp"
+    },
+    "seal-base": {
+      "file": "assets/photos/seal-base.webp"
+    },
+    "disk-back": {
+      "file": "assets/photos/disk-back.webp"
+    },
+    "seal-1999": {
+      "file": "assets/photos/seal-1999.webp"
+    },
+    "youth-group": {
+      "file": "assets/photos/youth-group.webp"
+    }
+  }
+}
