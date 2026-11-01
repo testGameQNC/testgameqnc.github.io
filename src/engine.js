@@ -171,7 +171,12 @@ const Y2K = (() => {
   const $ = (s, r = document) => r.querySelector(s);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const strip = (h) => String(h || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-  function fmt(s) { return _t(String(s == null ? '' : s)).replace(/\{player\}/g, esc(S ? S.player : '')); }
+  // Resolve legacy default names at display time so existing saves stay intact.
+  function playerText(s, html = false) {
+    const name = S ? S.player : '';
+    return String(s == null ? '' : s).replace(/\{player\}|老K/g, () => html ? esc(name) : name);
+  }
+  function fmt(s) { return playerText(_t(String(s == null ? '' : s)), true); }
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
     if (attrs) for (const [k, v] of Object.entries(attrs)) {
@@ -227,6 +232,7 @@ const Y2K = (() => {
     }, { passive: true });
     button.addEventListener('touchmove', e => { if (press && press.kind === 'touch') { const t = [...e.touches].find(t => t.identifier === press.id); if (t) move(t.clientX, t.clientY); } }, { passive: true });
     button.addEventListener('touchend', e => {
+      if (!targetOf(e)) return;
       const t = press && [...e.changedTouches].find(t => press.kind === 'pointer' || t.identifier === press.id);
       if (t) finish(e, t.clientX, t.clientY);
       else if (Date.now() < suppressClickUntil) { if (e.cancelable) e.preventDefault(); e.stopPropagation(); }
@@ -247,6 +253,35 @@ const Y2K = (() => {
   function clearTimers() { timers.forEach(clearTimeout); timers.clear(); }
   const coarse = () => window.matchMedia && matchMedia('(pointer: coarse)').matches;
   const narrow = () => window.innerWidth <= 960;
+  const touchKeyboard = () => navigator.maxTouchPoints > 0 || coarse();
+  const confirmInput = e => e.key === 'Enter' && !e.isComposing && e.keyCode !== 229;
+  const textInputTarget = target => {
+    const input = target?.closest?.('input, textarea, [contenteditable="true"]');
+    if (!input || input.disabled || input.readOnly) return null;
+    return input.isContentEditable || input.tagName === 'TEXTAREA' || ['text', 'search', 'password', 'email', 'url', 'tel', 'number'].includes(input.type) ? input : null;
+  };
+  // iPad can omit the compatibility click after a touch. Focus the actual field
+  // synchronously inside the trusted gesture so WebKit may show its keyboard.
+  // Leave scrolling, selection, paste and native click behavior untouched.
+  function bindTextInputs() {
+    let touch = null, pen = null;
+    const begin = (input, id, x, y) => input && ({ input, id, x, y, moved: false });
+    const move = (press, x, y) => { if (press && Math.hypot(x - press.x, y - press.y) > 12) press.moved = true; };
+    const finish = (press, e, x, y) => {
+      if (!press || !e.isTrusted || press.moved || !press.input.isConnected || textInputTarget(e.target) !== press.input) return;
+      const r = press.input.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) press.input.focus();
+    };
+    document.addEventListener('touchstart', e => { const t = e.touches[0]; touch = e.touches.length === 1 ? begin(textInputTarget(e.target), t.identifier, t.clientX, t.clientY) : null; }, { capture: true, passive: true });
+    document.addEventListener('touchmove', e => { const t = touch && [...e.touches].find(t => t.identifier === touch.id); if (t) move(touch, t.clientX, t.clientY); }, { capture: true, passive: true });
+    document.addEventListener('touchend', e => { const t = touch && [...e.changedTouches].find(t => t.identifier === touch.id); if (t) { move(touch, t.clientX, t.clientY); finish(touch, e, t.clientX, t.clientY); } touch = null; }, { capture: true, passive: true });
+    document.addEventListener('touchcancel', () => { touch = null; }, { capture: true, passive: true });
+    document.addEventListener('pointerdown', e => { if (e.pointerType === 'pen') pen = begin(textInputTarget(e.target), e.pointerId, e.clientX, e.clientY); }, true);
+    document.addEventListener('pointermove', e => { if (pen && pen.id === e.pointerId) move(pen, e.clientX, e.clientY); }, true);
+    document.addEventListener('pointerup', e => { if (pen && pen.id === e.pointerId) { move(pen, e.clientX, e.clientY); finish(pen, e, e.clientX, e.clientY); pen = null; } }, true);
+    document.addEventListener('pointercancel', () => { pen = null; }, true);
+  }
+
 
   // ============================================================
   // 状态、条件、动作
@@ -261,7 +296,7 @@ const Y2K = (() => {
       dlg: {}, dlgQ: {}, chat: {}, unread: {}, wait: {}, mails: [], mailRead: {}, items: [], itemSeen: {}, boardFill: {},
       seenBoards: {}, seenAsk: {}, chapter: null, chTime: null, stage: 'off', clock: '2026-12-20 21:30', clockAt: Date.now(),
       showHidden: false, playMs: 0, runId: window.Y2KLeaderboard?.newRun(), finishRecords: {}, created: Date.now(), newNotes: 0, newBoards: 0, sound: true, readingSeen: {},
-      snap: 'cur', hh: {}, storyRevision: D.storyRevision || 0,
+      snap: 'cur', hh: {}, storyRevision: D.storyRevision || 0, chatTimeVersion: 1,
     };
   }
   const compiled = {};
@@ -420,6 +455,7 @@ const Y2K = (() => {
     closeAllWins(); closeOverlay(); closeModal();
     S = Object.assign(fresh(o.player), o);
     if (D.migrateStory) { S.storyRevision = o.storyRevision || 0; D.migrateStory(S); }
+    if (o.chatTimeVersion !== 1) repairChatTimes();
     // Keep in-chapter date advances (overnight investigation / next-day hospital) when loading.
     if (D.retime) Object.values(S.chat).forEach(log => log.forEach(m => { if (typeof m.text === 'string') m.text = D.retime(m.text); }));
     if (window.Y2K2Locale) Object.values(S.chat).forEach(log => log.forEach(m => { if (!m.ref && typeof m.text === 'string') m.text = window.Y2K2Locale.history(m.text, LANG); }));
@@ -543,22 +579,49 @@ const Y2K = (() => {
   // ============================================================
   function machineNow() {
     const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/.exec(S.clock || '1900-01-01 00:00');
-    const base = new Date(+m[1] < 1970 ? 2000 : +m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
-    const d = new Date(base.getTime() + (Date.now() - S.clockAt));
-    const y = +m[1] < 1970 ? +m[1] + (d.getFullYear() - 2000) : d.getFullYear();
-    return { y, mo: d.getMonth() + 1, d: d.getDate(), hm: `${pad(d.getHours())}:${pad(d.getMinutes())}` };
+    return { y: +m[1], mo: +m[2], d: +m[3], hm: `${m[4]}:${m[5]}` };
   }
-  function phoneNow() {
-    const t = S.chTime || { date: '2026-11-05', time: '21:10', at: Date.now() };
-    const [hh, mm] = t.time.split(':').map(Number);
-    const mins = hh * 60 + mm + Math.floor((Date.now() - t.at) / 60000);
-    const dd = Math.floor(mins / 1440);
-    const [y, mo, d] = t.date.split('-').map(Number);
-    const day = new Date(y, mo - 1, d + dd);
-    const M = day.getMonth() + 1, Dd = day.getDate(), w = day.getDay();
+  // Narrative dates advance only at story events, independently of real play time.
+  function sceneTime() { return S.clock || '2026-12-20 21:30'; }
+  function phoneTime(value) {
+    const [ymd, hm] = value.split(' '), [y, M, Dd] = ymd.split('-').map(Number);
+    const w = new Date(Date.UTC(y, M - 1, Dd)).getUTCDay();
     const date = LANG === 'en' ? `${'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[M - 1]} ${Dd}` : `${M}月${Dd}日`;
     const wk = LANG === 'en' ? 'Sun Mon Tue Wed Thu Fri Sat'.split(' ')[w] : LANG === 'ja' ? '(' + '日月火水木金土'[w] + ')' : '周' + '日一二三四五六'[w];
-    return { date, hm: `${pad(Math.floor(mins / 60) % 24)}:${pad(mins % 60)}`, wk };
+    return { date, hm, wk };
+  }
+  function phoneNow() { return phoneTime(sceneTime()); }
+  function chatTimestamp(m) {
+    if (/^\d{4}-\d\d-\d\d \d\d:\d\d$/.test(m.sceneAt || '')) return m.sceneAt;
+    const raw = String(m.at || '');
+    let p = /^(\d{1,2})月(\d{1,2})日 (\d\d:\d\d)$/.exec(raw);
+    if (!p) {
+      const en = /^([A-Z][a-z]{2}) (\d{1,2}) (\d\d:\d\d)$/.exec(raw);
+      const month = en && 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ').indexOf(en[1]) + 1;
+      if (month) p = [raw, month, en[2], en[3]];
+    }
+    if (!p) return null;
+    const start = D.chapters[0].date, year = +start.slice(0, 4) + (+p[1] < +start.slice(5, 7) ? 1 : 0);
+    return `${year}-${pad(+p[1])}-${pad(+p[2])} ${p[3]}`;
+  }
+  function chatTime(m) { const at = chatTimestamp(m); return at ? phoneTime(at) : { date: '', hm: '' }; }
+  function chatListTime(m) {
+    if (!m) return '';
+    const t = chatTime(m), at = chatTimestamp(m);
+    return at && at.slice(0, 10) !== sceneTime().slice(0, 10) ? t.date : t.hm;
+  }
+  function repairChatTimes() {
+    // A later message is an upper bound for earlier ones. Keep order and content;
+    // only clamp impossible future timestamps left by the former wall clock.
+    for (const log of Object.values(S.chat || {})) {
+      let ceiling = sceneTime();
+      for (let i = log.length - 1; i >= 0; i--) {
+        const m = log[i], at = chatTimestamp(m); if (!at) continue;
+        m.sceneAt = at > ceiling ? ceiling : at; ceiling = m.sceneAt;
+        const t = phoneTime(m.sceneAt); m.at = `${t.date} ${t.hm}`;
+      }
+    }
+    S.chatTimeVersion = 1;
   }
 
   // ============================================================
@@ -740,7 +803,7 @@ const Y2K = (() => {
     const inputs = h('div');
     if (kind === 'text') {
       const inp = h('input', { class: opts.style === 'bios' ? '' : 'f98', type: 'text', id: 'pz_' + id, placeholder: opts.placeholder || p.placeholder || '', autocomplete: 'off', spellcheck: 'false', style: { width: '100%' } });
-      inp.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+      inp.onkeydown = (e) => { if (confirmInput(e)) submit(); };
       inputs.append(inp); getVal = () => inp.value; focusEl = inp;
     } else if (kind === 'choice' || kind === 'pick') {
       const wrap = h('div', { class: 'opts' });
@@ -750,7 +813,7 @@ const Y2K = (() => {
       getVal = () => { const sel = [...wrap.querySelectorAll('input:checked')].map(x => +x.value); return kind === 'choice' ? sel[0] : sel; };
     } else if (kind === 'multi') {
       const g = h('div', { class: 'fields' });
-      const ins = p.fields.map((f, i) => { const inp = h('input', { class: 'f98', type: 'text', id: `pz_${id}_${i}`, autocomplete: 'off', placeholder: f.placeholder || '' }); inp.onkeydown = (e) => { if (e.key === 'Enter') submit(); }; g.append(h('label', { for: `pz_${id}_${i}`, html: fmt(f.label) }), inp); return inp; });
+      const ins = p.fields.map((f, i) => { const inp = h('input', { class: 'f98', type: 'text', id: `pz_${id}_${i}`, autocomplete: 'off', placeholder: f.placeholder || '' }); inp.onkeydown = (e) => { if (confirmInput(e)) submit(); }; g.append(h('label', { for: `pz_${id}_${i}`, html: fmt(f.label) }), inp); return inp; });
       inputs.append(g); getVal = () => ins.map(x => x.value); focusEl = ins[0];
     }
     // 锁的谜题属于还没开始的章节：拒绝任何答案，也不给提示（避免提示提前泄露答案）
@@ -779,7 +842,7 @@ const Y2K = (() => {
     }
     if (!opts.hidePrompt) box.append(prompt);
     box.append(inputs, msg, hints.box, h('div', { class: 'row' }, hints.button, opts.extraBtn || null, okBtn));
-    box.focusFirst = () => focusEl && setTimeout(() => focusEl.focus(), 30);
+    box.focusFirst = () => { if (focusEl && !touchKeyboard()) focusEl.focus(); };
     return box;
   }
   function modalRoot() { return $('#modal'); }
@@ -913,7 +976,7 @@ const Y2K = (() => {
   function pushChat(c, m) {
     const t = phoneNow();
     if (m.ref && m.html) { m = Object.assign({}, m); delete m.html; }
-    (S.chat[c] = S.chat[c] || []).push(Object.assign({ at: `${t.date} ${t.hm}` }, m));
+    (S.chat[c] = S.chat[c] || []).push(Object.assign({ at: `${t.date} ${t.hm}`, sceneAt: sceneTime() }, m));
     const viewing = ui.tab === 'msg' && ui.chat === c && (!narrow() || ui.phoneOpen);
     if (m.from === 'npc' && !viewing) { S.unread[c] = (S.unread[c] || 0) + 1; sfx('msg'); }
     renderPhone();
@@ -1195,7 +1258,7 @@ const Y2K = (() => {
         const box = h('div', { class: 'chat' });
         let lastDay = '';
         (S.chat[c] || []).forEach(m => {
-          const day = (m.at || '').split(' ')[0];
+          const day = chatTime(m).date;
           if (day && day !== lastDay) { box.append(h('div', { class: 'chat-day', text: day })); lastDay = day; }
           const b = h('div', { class: 'bub ' + m.from, title: m.at || '' });
           if (m.who) b.append(h('b', { class: 'who', text: m.who }));
@@ -1234,8 +1297,8 @@ const Y2K = (() => {
           const w = S.wait[id] && S.wait[id].type !== 'wait';
           list.append(h('button', { class: 'ph-item', onclick: () => { ui.chat = id; renderPhone(); } },
             h('div', { class: 'av', text: info.avatar || info.name[0] }),
-            h('div', { class: 'mid' }, h('b', { text: info.name }), h('span', { text: typing[id] ? _t('对方正在输入…') : w ? _t('【等你回复】') : last ? (last.from === 'me' ? _t('我：') : last.who ? last.who + '：' : '') + (msgText(last) || _t('[图片]')) : '' })),
-            h('div', { class: 'rt' }, h('span', { text: last ? (last.at || '').split(' ')[1] || '' : '' }), S.unread[id] ? h('span', { class: 'cnt', text: String(S.unread[id]) }) : null)));
+            h('div', { class: 'mid' }, h('b', { text: info.name }), h('span', { text: typing[id] ? _t('对方正在输入…') : w ? _t('【等你回复】') : last ? (last.from === 'me' ? _t('我：') : last.who ? last.who + '：' : '') + playerText(msgText(last) || _t('[图片]')) : '' })),
+            h('div', { class: 'rt' }, h('span', { text: chatListTime(last) }), S.unread[id] ? h('span', { class: 'cnt', text: String(S.unread[id]) }) : null)));
         });
         if (!list.children.length) list.append(h('div', { class: 'ph-empty', text: _t('暂无消息') }));
         body.append(list);
@@ -1292,7 +1355,7 @@ const Y2K = (() => {
       if (ui.noteTab === 'questions') {
         renderJournal(body);
         if (!asks.length) body.append(h('div', { class: 'ph-card done', text: _t('暂无待核对的问题。') }));
-        const addQuestions = (list, host) => list.forEach(([id, p]) => host.append(h('div', { class: 'ph-card q', role: 'button', tabindex: 0, onclick: () => askPuzzle(id, null, true), onkeydown: (e) => { if (e.key === 'Enter') askPuzzle(id, null, true); } }, h('div', { class: 'k', text: _t('点击作答') }), h('div', { html: fmt(p.title) }))));
+        const addQuestions = (list, host) => list.forEach(([id, p]) => host.append(h('div', { class: 'ph-card q', role: 'button', tabindex: 0, onclick: () => askPuzzle(id, null, true), onkeydown: (e) => { if (confirmInput(e)) askPuzzle(id, null, true); } }, h('div', { class: 'k', text: _t('点击作答') }), h('div', { html: fmt(p.title) }))));
         addQuestions(asks.filter(([id]) => noteChapter(id) === S.chapter), body);
         const old = asks.filter(([id]) => noteChapter(id) !== S.chapter);
         if (old.length) { const fold = h('details', { class: 'ph-facts' }, h('summary', { text: _t('之前未解的问题') + ' · ' + old.length })); addQuestions(old, fold); body.append(fold); }
@@ -1310,7 +1373,7 @@ const Y2K = (() => {
       if (!list.length) body.append(h('div', { class: 'ph-empty', text: _t('暂无记录。') }));
       list.reverse().forEach(([id, b]) => {
         const ok = S.flags['board_' + id];
-        body.append(h('div', { class: 'ph-card q' + (ok ? ' done' : ''), role: 'button', tabindex: 0, style: ok ? { borderLeftColor: 'var(--ph-good)' } : null, onclick: () => openBoard(id), onkeydown: (e) => { if (e.key === 'Enter') openBoard(id); } },
+        body.append(h('div', { class: 'ph-card q' + (ok ? ' done' : ''), role: 'button', tabindex: 0, style: ok ? { borderLeftColor: 'var(--ph-good)' } : null, onclick: () => openBoard(id), onkeydown: (e) => { if (confirmInput(e)) openBoard(id); } },
           h('div', { class: 'k', text: ok ? _t('已完成') : _t('进行中 · 点击打开') }), h('div', { style: { fontWeight: 600 }, text: b.title })));
       });
     } else if (ui.tab === 'clips' && clipsOpen()) {
@@ -1473,12 +1536,12 @@ const Y2K = (() => {
       LS.del(KEY.pre);
       loadState(fresh(name));
     };
-    inp.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+    inp.onkeydown = (e) => { if (confirmInput(e)) go(); };
     titlePanel(panel, _t('你的昵称'), opener).append(
       h('div', { class: 'muted', text: _t('你在梧城开一家电脑维修铺，也拍修老电脑的视频。七中那期上线以后，找你的人多了起来。别人会怎样称呼你？') }), h('div', { style: { height: '8px' } }), inp,
       ...(hasSave ? [h('div', { class: 'muted', style: { marginTop: '8px' }, text: _t('注意：开始新调查会覆盖自动存档（手动存档位不受影响）。') })] : []),
       h('div', { class: 'row' }, h('button', { class: 'tbtn', text: _t('开始'), onclick: go })));
-    inp.focus();
+    if (!touchKeyboard()) inp.focus();
   }
   function loadPanel(panel, opener) {
     const p = titlePanel(panel, _t('读取存档'), opener);
@@ -1522,7 +1585,7 @@ const Y2K = (() => {
     ];
     let i = 0;
     const tick = () => {
-      if (i < lines.length) { bios.innerHTML += lines[i++] + '\n'; later(tick, 180); return; }
+      if (i < lines.length) { bios.innerHTML += fmt(lines[i++]) + '\n'; later(tick, 180); return; }
       if (D.boot.biosLock && !solved(D.boot.biosLock)) showBiosPass(bios); else afterBios(bios);
     };
     tick();
@@ -1604,7 +1667,7 @@ const Y2K = (() => {
       const el = h('div', { class: 'icon', tabindex: 0, html: icon(en.icon, en.locked) + (en.fresh ? NEWDOT : '') + `<span>${esc(en.name)}</span>` });
       bindControl(el, () => { selectIcon(el); if (coarse()) en.open(); });
       el.ondblclick = () => { if (!coarse()) en.open(); };
-      el.onkeydown = (e) => { if (e.key === 'Enter') en.open(); };
+      el.onkeydown = (e) => { if (confirmInput(e)) en.open(); };
       bindCtx(el, () => [[_t('打开'), en.open], ...(en.file ? [[_t('属性'), () => showProps(en.file)]] : [])], () => selectIcon(el));
       box.append(el);
     });
@@ -1797,13 +1860,14 @@ const Y2K = (() => {
       if (!ctxEl || !touchOpened) show(e.clientX, e.clientY);
     });
     el.addEventListener('keydown', e => {
+      if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
       if (e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return;
       e.preventDefault(); e.stopPropagation(); const r = el.getBoundingClientRect(); show(r.left + r.width / 2, r.top + r.height / 2, true);
     });
     let lp = 0, touchOpened = false, touching = false, suppressContextUntil = 0;
     const cancel = () => { clearTimeout(lp); lp = 0; };
     el.addEventListener('touchstart', e => {
-      cancel(); touchOpened = false; touching = e.touches.length === 1; suppressContextUntil = 0; if (!touching) return;
+      cancel(); touchOpened = false; touching = e.touches.length === 1 && !e.target.closest('input, textarea, select, [contenteditable="true"]'); suppressContextUntil = 0; if (!touching) return;
       const { clientX, clientY } = e.touches[0];
       lp = setTimeout(() => { if (el.isConnected) { touchOpened = true; suppressContextUntil = Date.now() + 1000; show(clientX, clientY); } }, 550);
     }, { passive: true });
@@ -1981,14 +2045,14 @@ const Y2K = (() => {
       const locks = []; for (let q = raw; q && q !== 'A:' && q !== 'C:'; q = parentOf(q)) { const e = folderEntry(q); if (e?.lock && !solved(e.lock)) locks.unshift(e.lock); }
       const enter = () => { if (locks.length) return withLock(locks.shift(), enter); if (f) openFile(f); else go(raw); }; enter();
     };
-    address.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); visit(); } }; address.onfocus = () => address.select();
+    address.onkeydown = e => { if (confirmInput(e)) { e.preventDefault(); visit(); } }; address.onfocus = () => address.select();
     win.el.onkeydown = e => { if (e.altKey && ['ArrowLeft','ArrowRight','ArrowUp'].includes(e.key)) { e.preventDefault(); if(e.key==='ArrowUp')go(parentOf(st.path));else travel(e.key==='ArrowLeft'?-1:1); } else if(e.ctrlKey&&e.key.toLowerCase()==='l'){e.preventDefault();address.focus();} else if(e.key==='F5'){e.preventDefault();win.refresh(true);} };
     const sel = () => st.sel && items.find(x => x.path === st.sel);
     menus(win, [
       [_t('文件(F)'), [[_t('打开'), () => { const s = sel(); s && openEntry(s); }], [_t('属性'), () => { const s = sel(); s && showProps(s.file || s.entry || { path: s.path, type: 'folder' }); }], '-', [_t('关闭'), () => closeWin(win)]]],
       [_t('查看(V)'), [[_t('大图标'), () => { st.view = 'icons'; win.refresh(true); }, st.view === 'icons'], [_t('详细资料'), () => { st.view = 'details'; win.refresh(true); }, st.view === 'details'], '-',
         [_t('显示所有文件（含隐藏文件）'), () => { S.showHidden = !S.showHidden; flagVer++; refreshWins(true); renderIcons(); save('auto'); toast(S.showHidden ? _t('已显示隐藏文件') : _t('已不显示隐藏文件')); }, S.showHidden]]],
-      [_t('帮助(H)'), [[_t('关于 Windows'), () => msgBox(_t('关于 Windows'), _t('Microsoft Windows 98<br>本机已授权给：老K工作室'))]]],
+      [_t('帮助(H)'), [[_t('关于 Windows'), () => msgBox(_t('关于 Windows'), fmt('Microsoft Windows 98<br>本机已授权给：老K工作室'))]]],
     ]);
     win.top.append(h('div', { class: 'toolbar98' },
       controlButton({ class: 'b98', text: '← 后退', disabled: st.hi === 0 }, () => travel(-1)),
@@ -2019,7 +2083,7 @@ const Y2K = (() => {
         const select = () => { st.sel = it.path; fl.querySelectorAll('.sel').forEach(x => x.classList.remove('sel')); el.classList.add('sel'); win.status.firstChild && (win.status.firstChild.textContent = statusText(it)); };
         bindControl(el, () => { select(); if (coarse()) openEntry(it); });
         el.ondblclick = () => { if (!coarse()) openEntry(it); };
-        el.onkeydown = (e) => { if (e.key === 'Enter') openEntry(it); };
+        el.onkeydown = (e) => { if (confirmInput(e)) openEntry(it); };
         bindCtx(el, () => [[_t('打开'), () => openEntry(it)], [_t('属性'), () => showProps(f || it.entry || { path: it.path, type: 'folder' })]], select);
         fl.append(el);
       });
@@ -2036,7 +2100,7 @@ const Y2K = (() => {
         bindControl(tr, () => { select(); if (coarse()) openEntry(it); });
         tr.ondblclick = () => { if (!coarse()) openEntry(it); };
         tr.tabIndex = 0;
-        tr.onkeydown = e => { if (e.key === 'Enter') openEntry(it); };
+        tr.onkeydown = e => { if (confirmInput(e)) openEntry(it); };
         bindCtx(tr, () => [[_t('打开'), () => openEntry(it)], [_t('属性'), () => showProps(f || it.entry || { path: it.path, type: 'folder' })]], select);
         tb.append(tr);
       });
@@ -2078,8 +2142,8 @@ const Y2K = (() => {
         st.at=pos+q.length;
         if(editable){paper.focus();paper.setSelectionRange(pos,pos+q.length);}else{const node=paper.firstChild;if(!node)return;const range=document.createRange();range.setStart(node,pos);range.setEnd(node,pos+q.length);const sel=getSelection();sel.removeAllRanges();sel.addRange(range);const rect=range.getBoundingClientRect(),base=win.body.getBoundingClientRect();win.body.scrollTop+=rect.top-base.top-50;paper.focus({preventScroll:true});}
       };
-      const find=()=>{const input=h('input',{class:'f98',id:'np-find','aria-label':'查找内容',value:st.q});const run=()=>{st.q=input.value;st.at=0;closeModal();if(st.q)findNext();};const m=modalRoot();m.innerHTML='';m.append(h('div',{class:'shade',onclick:closeModal}),h('div',{class:'dlg98 out'},h('div',{class:'titlebar'},h('span',{class:'t',text:'查找'}),controlButton({class:'b98 tbb',text:'×','aria-label':'关闭'},closeModal)),h('div',{class:'wbody'},h('label',{for:'np-find',text:'查找内容：'}),input,h('div',{class:'row'},controlButton({class:'b98',text:'查找下一个'},run),controlButton({class:'b98',text:'取消'},closeModal)))));input.onkeydown=e=>{if(e.key==='Enter')run();};input.focus();input.select();};
-      const saveCopy=(onSaved)=>{const filename=h('input',{class:'f98',id:'np-filename','aria-label':'文件名',value:editable?'无标题.txt':nameOf(f.path)});const m=modalRoot();m.innerHTML='';const run=()=>{let name=filename.value.trim();if(!name){filename.focus();return;}name=name.replace(/[<>:"/\\|?*]/g,'_');if(!name.includes('.'))name+='.txt';const blob=new Blob(['\ufeff'+st.text],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),a=h('a',{href:url,download:name});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);st.changed=false;if(editable){f.path=name;win.setTitle(name+' - 记事本');}closeModal();if(typeof onSaved==='function')onSaved();};m.append(h('div',{class:'shade',onclick:closeModal}),h('div',{class:'dlg98 out'},h('div',{class:'titlebar'},h('span',{class:'t',text:'另存为'}),controlButton({class:'b98 tbb',text:'×','aria-label':'关闭'},closeModal)),h('div',{class:'wbody'},h('label',{for:'np-filename',text:'文件名：'}),filename,h('div',{class:'row'},controlButton({class:'b98',text:'保存'},run),controlButton({class:'b98',text:'取消'},closeModal)))));filename.onkeydown=e=>{if(e.key==='Enter')run();};filename.focus();filename.select();};
+      const find=()=>{const input=h('input',{class:'f98',id:'np-find','aria-label':'查找内容',value:st.q});const run=()=>{st.q=input.value;st.at=0;closeModal();if(st.q)findNext();};const m=modalRoot();m.innerHTML='';m.append(h('div',{class:'shade',onclick:closeModal}),h('div',{class:'dlg98 out'},h('div',{class:'titlebar'},h('span',{class:'t',text:'查找'}),controlButton({class:'b98 tbb',text:'×','aria-label':'关闭'},closeModal)),h('div',{class:'wbody'},h('label',{for:'np-find',text:'查找内容：'}),input,h('div',{class:'row'},controlButton({class:'b98',text:'查找下一个'},run),controlButton({class:'b98',text:'取消'},closeModal)))));input.onkeydown=e=>{if (confirmInput(e))run();};if(!touchKeyboard()){input.focus();input.select();}};
+      const saveCopy=(onSaved)=>{const filename=h('input',{class:'f98',id:'np-filename','aria-label':'文件名',value:editable?'无标题.txt':nameOf(f.path)});const m=modalRoot();m.innerHTML='';const run=()=>{let name=filename.value.trim();if(!name){filename.focus();return;}name=name.replace(/[<>:"/\\|?*]/g,'_');if(!name.includes('.'))name+='.txt';const blob=new Blob(['\ufeff'+st.text],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),a=h('a',{href:url,download:name});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);st.changed=false;if(editable){f.path=name;win.setTitle(name+' - 记事本');}closeModal();if(typeof onSaved==='function')onSaved();};m.append(h('div',{class:'shade',onclick:closeModal}),h('div',{class:'dlg98 out'},h('div',{class:'titlebar'},h('span',{class:'t',text:'另存为'}),controlButton({class:'b98 tbb',text:'×','aria-label':'关闭'},closeModal)),h('div',{class:'wbody'},h('label',{for:'np-filename',text:'文件名：'}),filename,h('div',{class:'row'},controlButton({class:'b98',text:'保存'},run),controlButton({class:'b98',text:'取消'},closeModal)))));filename.onkeydown=e=>{if (confirmInput(e))run();};if(!touchKeyboard()){filename.focus();filename.select();}};
       const close=()=>{if(st.changed)return msgBox('记事本','是否保存对文档的修改？',[{text:'保存',fn:()=>saveCopy(()=>closeWin(win,true))},{text:'不保存',fn:()=>closeWin(win,true)},{text:'取消'}]);closeWin(win,true);};
       win.requestClose=close;
       menus(win,[['文件(F)',[['新建',()=>openNotepad({path:'无标题',text:''})],['另存为…',saveCopy],...(f.id?[['属性',()=>showProps(f)]]:[]),'-',['关闭',close]]],['编辑(E)',[['复制',copy],['查找…',find],['查找下一个',findNext],'-',['全选',all]]],['格式(O)',[['自动换行',()=>{st.wrap=!st.wrap;win.refresh(true);},st.wrap]]]]);
@@ -2097,7 +2161,7 @@ const Y2K = (() => {
   function openImage(f) {
     openWin({ key: 'img_' + f.id, title: nameOf(f.path) + _t(' - 图像查看器'), icon: 'img', file: f, w: 640, h: 500, bodyClass: '', state: { z: null }, onClose: win => win.imageResize && win.imageResize.disconnect(), render: (win) => {
       menus(win, [[_t('文件(F)'), [[_t('属性'), () => showProps(f)], [_t('关闭'), () => closeWin(win)]]]]);
-      const canvas = h('div', { class: 'canvas', html: fmt(f.html || ''), tabindex: 0, role: 'button', 'aria-label': _t('全屏查看'), ondblclick: () => viewImage(fmt(f.html), f), onkeydown: e => { if (e.key === 'Enter') viewImage(fmt(f.html), f); } });
+      const canvas = h('div', { class: 'canvas', html: fmt(f.html || ''), tabindex: 0, role: 'button', 'aria-label': _t('全屏查看'), ondblclick: () => viewImage(fmt(f.html), f), onkeydown: e => { if (confirmInput(e)) viewImage(fmt(f.html), f); } });
       const size = imageSize(canvas);
       const value = h('span');
       let scale = 1;
@@ -2278,7 +2342,7 @@ const Y2K = (() => {
         st.account=select.value;st.c=null;st.d=null;st.filter='';S.gxRemember=remember.checked;S.gxSession=remember.checked?st.account:null;
         solvePuzzle(a.puzzle);save('auto');win.refresh(true);
       };
-      pass.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();login();}};
+      pass.onkeydown=e=>{if (confirmInput(e)){e.preventDefault();login();}};
       panel.append(h('label',{for:'gx-account',text:'账号'}),select,h('label',{for:'gx-password',text:'本地资料密码'}),pass,
         h('label',{class:'gx-remember'},remember,h('span',{text:'在这台电脑上记住已验证的账号'})),source,msg,hintBox,
         h('div',{class:'row'},hintButton,controlButton({class:'b98',text:'登录',id:'gx-login',disabled:!accounts.length},login),controlButton({class:'b98',text:'取消'},()=>closeWin(win))));
@@ -2322,9 +2386,9 @@ const Y2K = (() => {
           res.append(controlButton({class:'gx-search-result',text:(c?.nick||'')+'　'+l.date+' '+(x.time||'')+'\n'+x.text},()=>{closeModal();win.state.c=l.contact;win.state.d=l.id;win.state.filter='';win.resetScroll=true;win.refresh(true);}));}}
       if(!res.children.length)res.textContent='没有找到。';
     };
-    inp.onkeydown=e=>{if(e.key==='Enter')run();};
+    inp.onkeydown=e=>{if (confirmInput(e))run();};
     const dlg=h('div',{class:'dlg98 out'},h('div',{class:'titlebar'},h('span',{class:'t',text:'查找聊天记录 — '+gxAccount(win.state.account).nick}),controlButton({class:'b98 tbb',text:'×','aria-label':'关闭'},closeModal)),h('div',{class:'wbody'},h('label',{for:'gxq',text:'查找内容'}),inp,h('div',{class:'row'},from,h('span',{text:'至'}),to),h('div',{class:'row'},controlButton({class:'b98',text:'查找'},run)),res));
-    m.append(h('div',{class:'shade',onclick:closeModal}),dlg);inp.focus();
+    m.append(h('div',{class:'shade',onclick:closeModal}),dlg);if (!touchKeyboard()) inp.focus();
   }
 
   // ---- IE + 少年宫小站 ----
@@ -2357,7 +2421,7 @@ const Y2K = (() => {
       [_t('帮助(H)'), [[_t('关于'), () => msgBox(_t('关于 Internet Explorer'), 'Microsoft Internet Explorer 6.0')]]],
     ]);
     const addr = h('input', { class: 'f98', id: 'ieaddr', value: url, spellcheck: 'false', autocomplete: 'off' });
-    addr.onkeydown = (e) => { if (e.key === 'Enter') { markInteraction(); ieGo(win, addr.value); } };
+    addr.onkeydown = (e) => { if (confirmInput(e)) { markInteraction(); ieGo(win, addr.value); } };
     addr.onfocus = () => addr.select();
     win.top.append(h('div', { class: 'toolbar98' },
       controlButton({ class: 'b98', text: _t('← 后退'), disabled: st.hi === 0 }, () => { st.hi--; win.resetScroll = true; win.refresh(true); }),
@@ -2468,7 +2532,7 @@ const Y2K = (() => {
       const wrap = h('div', { class: 'wrap' });
       const inp = h('input', { id: 'bbsq', value: q, style: { font: 'inherit', padding: '2px 4px', width: '220px' } });
       const go = () => ieGo(win, 'http://' + (D.bbsMeta.host || '192.168.1.103') + '/search.asp?q=' + encodeURIComponent(inp.value.trim()));
-      inp.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+      inp.onkeydown = (e) => { if (confirmInput(e)) go(); };
       wrap.append(h('div', { style: { margin: '6px 0 10px' } }, _t('搜索帖子标题和内容：'), inp, ' ', controlButton({ class: 'b98', text: _t('搜索') }, go)));
       if (q) {
         const res = [];
@@ -2520,7 +2584,7 @@ const Y2K = (() => {
       const iu = h('input', { id: 'lgu', value: fu, placeholder: _t('用户 ID'), style: { width: '100px', font: 'inherit' } });
       const id2 = h('input', { id: 'lgd', value: fd, placeholder: _t('日期，如 2000-01-01'), style: { width: '150px', font: 'inherit' } });
       const go = (o) => ieGo(win, `http://${host}/admin/log.asp?user=${encodeURIComponent(iu.value.trim())}&date=${encodeURIComponent(id2.value.trim())}&order=${o || order}`);
-      iu.onkeydown = id2.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+      iu.onkeydown = id2.onkeydown = (e) => { if (confirmInput(e)) go(); };
       wrap.append(h('div', { style: { margin: '4px 0 8px', display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' } }, _t('筛选：'), iu, id2, controlButton({ class: 'b98', text: _t('筛选') }, () => go()), controlButton({ class: 'b98', text: order === 'desc' ? _t('改为从旧到新') : _t('改为从新到旧') }, () => go(order === 'desc' ? 'asc' : 'desc')), h('span', { style: { color: '#666' }, text: `${_t('共')} ${rows.length} ${_t('条（时间为服务器时间）')}` })));
       wrap.append(h('div', { html: `<table class="t"><tr><th>${_t('时间')}</th><th>${_t('用户')}</th><th>IP</th><th>${_t('机器名')}</th></tr>${rows.slice(0, 400).map(l => `<tr><td>${esc(l.time)}</td><td>${esc(l.user)}</td><td>${esc(l.ip || '')}</td><td>${esc(l.host || '')}</td></tr>`).join('') || _t('<tr><td colspan="4">没有记录。</td></tr>')}</table>` }));
       node.append(wrap);
@@ -2554,6 +2618,8 @@ const Y2K = (() => {
   function refreshWins(force) { wins.forEach(w => { if (w.o.live || force) w.refresh(); }); }
   function renderAll() {
     if (!S) return;
+    const brand = $('.brand');
+    if (brand) brand.textContent = playerText(_t('老K工作室 · 读盘机'));
     renderPhone();
     if (S.stage === 'win' && $('#desktop')) {
       if (renderedFlagVer !== flagVer) { renderedFlagVer = flagVer; renderIcons(); refreshWins(); }
@@ -2698,7 +2764,7 @@ const Y2K = (() => {
         const tr = h('tr', { class: 'hunk ' + cls + (st.sel === x.id ? ' sel' : ''), tabindex: k === 0 ? 0 : null, 'data-h': x.id, 'data-source': x.source.join('\n') },
           h('td', { text: x.l[k] != null ? x.l[k] : '' }), h('td', { text: x.r[k] != null ? x.r[k] : '' }));
         tr.onclick = () => { st.sel = x.id; st.msg = ''; win.refresh(); };
-        tr.onkeydown = (e) => { if (e.key === 'Enter') tr.onclick(); };
+        tr.onkeydown = (e) => { if (confirmInput(e)) tr.onclick(); };
         tb.append(tr);
       }
     });
@@ -2879,7 +2945,7 @@ const Y2K = (() => {
       const s = el.closest('[data-spot]'); if (s) { st.sel = s.dataset.spot; st.msg = ''; win.refresh(true); }
     };
     mapBox.onclick = (e) => pick(e.target);
-    mapBox.onkeydown = (e) => { if (e.key === 'Enter') pick(e.target); };
+    mapBox.onkeydown = (e) => { if (confirmInput(e)) pick(e.target); };
 
     const side = h('div', { class: 'map-side' });
     if (!sp) side.append(h('div', { class: 'faded', text: _t('尚未选择地点。') }));
@@ -3033,6 +3099,7 @@ const Y2K = (() => {
   function patch(fn) { PATCHES.push(fn); }
 
   function boot() {
+    bindTextInputs();
     PATCHES.forEach(fn => fn(D));
     { const m = meta(); if (m.story !== 'sixth-disk-trial') { m.story = 'sixth-disk-trial'; m.endings = {}; setMeta(m); } }
     prepAnswers();

@@ -4,7 +4,7 @@ const {pathToFileURL}=require('node:url');
 const {chromium,webkit}=require('playwright');
 const root=path.resolve(__dirname,'..'),shots=path.join(root,'test-results');
 const release=fs.readFileSync(path.join(root,'千年虫2试玩.html'),'utf8');
-const html=release.replace('const debug = {','const debug = { loadState, writeSave, showTitle, askPuzzle, busy: () => Object.values(running).some(Boolean),').replace('return { add, boot, lang, patch };','return { add, boot, lang, patch, debug };');
+const html=release.replace('const debug = {','const debug = { loadState, writeSave, showTitle, askPuzzle, phoneNow, busy: () => Object.values(running).some(Boolean),').replace('return { add, boot, lang, patch };','return { add, boot, lang, patch, debug };');
 const kind=process.argv.includes('--webkit')?'webkit':'edge',mobile=process.argv.includes('--mobile');
 (async()=>{
  const browser=await(kind==='webkit'?webkit.launch({headless:true}):chromium.launch({headless:true,executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'}));
@@ -19,6 +19,9 @@ const kind=process.argv.includes('--webkit')?'webkit':'edge',mobile=process.argv
   assert.equal(await p.getByRole('button',{name:'排行榜',exact:true}).count(),0);
   await p.screenshot({path:path.join(shots,`${kind}-${mobile?'phone':'desktop'}-title.png`)});
   await p.getByRole('button',{name:'新的调查',exact:true}).click();await p.evaluate(()=>Y2K.debug.fast(true));
+  await p.locator('#nick').fill('小鲨');
+  await p.locator('#nick').dispatchEvent('keydown',{key:'Enter',code:'Enter',keyCode:229,isComposing:true});
+  assert(await p.locator('#nick').isVisible(),'IME confirmation must not submit the new-game form');
   await p.getByRole('button',{name:'开始',exact:true}).click();
   const flag=f=>p.evaluate(f=>!!Y2K.debug.state.flags[f],f);
   const card=async()=>{await p.waitForTimeout(100);while(await p.locator('.card').count()){await p.locator('.card').click();await p.waitForTimeout(100);}};
@@ -35,6 +38,7 @@ const kind=process.argv.includes('--webkit')?'webkit':'edge',mobile=process.argv
     await p.waitForFunction(id=>!!Y2K.debug.state.flags['solved_'+id],id);await p.waitForFunction(()=>!document.querySelector('#modal').children.length);
   };
   await card();await talk();assert(await flag('c0_box'));
+  await p.evaluate(()=>{const d=Y2K.debug;d.ui.tab='msg';d.ui.chat='chen';d.renderPhone();if(!document.querySelector('#phBody').textContent.includes('小鲨师傅'))throw Error('Opening greeting ignored the custom name');});
   await open('items','item','c0_list');await open('items','item','c0_photo');
   assert(await p.locator('#phBody svg[data-photo="unboxing"] image').evaluate(el=>el.getAttribute('href').startsWith('data:image/webp;base64,')));
   await p.locator('#phBody .evidence-photo').click();await p.locator('.viewer').waitFor();await p.keyboard.press('Escape');
@@ -70,6 +74,23 @@ const kind=process.argv.includes('--webkit')?'webkit':'edge',mobile=process.argv
   await p.getByRole('button',{name:'回看第一章',exact:true}).click();assert(!await flag('ending_TRIAL'));assert(!await flag('ch2'));
   await p.evaluate(s=>Y2K.debug.loadState(s),finished);await p.getByRole('button',{name:'返回标题画面',exact:true}).click();
   await p.reload();await p.getByRole('button',{name:'继续调查',exact:true}).click();assert.equal(await p.locator('.ending h1').textContent(),'敬请期待完整版本！');
+  await p.evaluate(finished=>{
+    const d=Y2K.debug,legacy=JSON.parse(JSON.stringify(finished));
+    delete legacy.chatTimeVersion;delete legacy.flags.ending_TRIAL;
+    legacy.wait={};legacy.dlgQ={};legacy.hints.c0_count=2;legacy.playMs=987654;
+    legacy.chat.chen=[{from:'npc',text:'老K师傅，资料已经发来。',at:'12月22日 01:00'}];
+    for(const dialogue of d.D.dialogues)legacy.dlg[dialogue.id]={i:dialogue.steps.length,done:true};
+    d.loadState(legacy);d.flush();d.closeOverlay();
+    const check=(ok,message)=>{if(!ok)throw Error(message);};
+    check(d.state.chatTimeVersion===1&&d.state.chat.chen[0].sceneAt===legacy.clock,'Legacy future timestamps must be repaired');
+    check(d.state.chat.chen[0].text==='老K师傅，资料已经发来。','Keep original message text');
+    check(d.state.hints.c0_count===2&&d.state.playMs>=987654&&d.state.flags.solved_c1_who,'Keep hints, play time and solved puzzles');
+    check(JSON.stringify(d.state.opened)===JSON.stringify(legacy.opened)&&JSON.stringify(d.state.collected)===JSON.stringify(legacy.collected),'Keep evidence and collectibles');
+    d.ui.tab='msg';d.ui.chat='chen';d.renderPhone();check(document.querySelector('#phBody').textContent.includes('小鲨师傅'),'Legacy greeting uses the saved nickname');
+    const initial=JSON.stringify(d.phoneNow()),realNow=Date.now;Date.now=()=>realNow()+86400000;
+    try{check(JSON.stringify(d.phoneNow())===initial,'Idle time must not advance the story date');}finally{Date.now=realNow;}
+    d.writeSave('s1');const saved=JSON.parse(localStorage.getItem('y2k2_trial_slot1'));check(saved.player==='小鲨'&&saved.chatTimeVersion===1,'Persist nickname and repaired dates');
+  },finished);
   await p.evaluate(()=>{try{Y2K.debug.loadState({...Y2K.debug.state,v:3,chapter:'ch7'});throw Error('accepted full save');}catch(e){if(e.message==='accepted full save')throw e;}});
   assert.equal(await p.evaluate(()=>localStorage.getItem('y2k2_auto')),'FULL_GAME_SAVE_UNCHANGED');
   assert.equal(await p.evaluate(()=>localStorage.getItem('y2k2_meta')),'FULL_GAME_META_UNCHANGED');
@@ -77,6 +98,6 @@ const kind=process.argv.includes('--webkit')?'webkit':'edge',mobile=process.argv
   const offline=await context.newPage();offline.on('pageerror',e=>errors.push(e.message));await offline.goto(pathToFileURL(path.join(root,'千年虫2试玩.html')).href);
   assert.equal(await offline.evaluate(()=>typeof Y2K.debug),'undefined');await offline.getByRole('button',{name:'新的调查',exact:true}).click();await offline.getByRole('button',{name:'开始',exact:true}).click();await offline.locator('.card').waitFor();
   assert.deepEqual(errors,[]);assert.deepEqual(external,[]);await context.close();
-  console.log(`PASS ${kind} ${mobile?'touch':'desktop'}: all 7 puzzles, real board, photos, delivery, save reload, trial end/revisit, full-save isolation and offline file`);
+  console.log(`PASS ${kind} ${mobile?'touch':'desktop'}: all 7 puzzles, real board, photos, delivery, custom names, IME, legacy dates/progress, trial end/revisit, full-save isolation and offline file`);
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});

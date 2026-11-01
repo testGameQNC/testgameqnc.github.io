@@ -620,3 +620,9 @@ table.det tr.sel .newtag { color: #5a4300; }
 .bbs-import { margin: 0 0 14px; padding: 8px 12px; border: 1px solid #b9c6d5; background: #f2f6fb; font-size: 12px; }
 .bbs-import ul { margin: 4px 0 0; padding-left: 20px; columns: 2; column-gap: 24px; }
 @media(max-width:600px){ .bbs-import ul { columns: 1; } }
+
+/* iPad native text input: retain selection/paste and avoid keyboard auto zoom. */
+input, textarea, [contenteditable="true"] { -webkit-user-select: text; user-select: text; }
+@media (any-pointer: coarse) {
+  input:not([readonly]):where(:not([type]), [type=text], [type=search], [type=password], [type=email], [type=url], [type=tel], [type=number]), textarea:not([readonly]) { font-size: 16px !important; min-height: 32px; touch-action: manipulation; }
+}
