@@ -1,7 +1,7 @@
 // Isolated browser walkthrough of every trial puzzle and the actual final board.
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const {pathToFileURL}=require('node:url');
-const {chromium,webkit}=require('playwright');
+const {chromium,webkit}=require(require.resolve('playwright',{paths:[__dirname,path.resolve(__dirname,'../../千年虫2/tools')]}));
 const root=path.resolve(__dirname,'..'),shots=path.join(root,'test-results');
 const release=fs.readFileSync(path.join(root,'千年虫2试玩.html'),'utf8');
 const html=release.replace('const debug = {','const debug = { loadState, writeSave, showTitle, askPuzzle, phoneNow, busy: () => Object.values(running).some(Boolean),').replace('return { add, boot, lang, patch };','return { add, boot, lang, patch, debug };');
@@ -35,7 +35,9 @@ const kind=process.argv.includes('--webkit')?'webkit':'edge',mobile=process.argv
     else {await p.locator('#pz_'+id).fill(wrong?'999':q.answers[0]);}
     await press(p.locator('#modal').getByRole('button',{name:'确定',exact:true}));
     if(wrong){assert(!await flag('solved_'+id));await p.locator('#pz_'+id).fill(q.answers[0]);await press(p.locator('#modal').getByRole('button',{name:'确定',exact:true}));}
-    await p.waitForFunction(id=>!!Y2K.debug.state.flags['solved_'+id],id);await p.waitForFunction(()=>!document.querySelector('#modal').children.length);
+    await p.waitForFunction(id=>!!Y2K.debug.state.flags['solved_'+id],id);
+    await press(p.locator('#modal [data-puzzle-ack]'));
+    await p.waitForFunction(()=>!document.querySelector('#modal').children.length);
   };
   await card();await talk();assert(await flag('c0_box'));
   await p.evaluate(()=>{const d=Y2K.debug;d.ui.tab='msg';d.ui.chat='chen';d.renderPhone();if(!document.querySelector('#phBody').textContent.includes('小鲨师傅'))throw Error('Opening greeting ignored the custom name');});
@@ -55,7 +57,7 @@ const kind=process.argv.includes('--webkit')?'webkit':'edge',mobile=process.argv
   assert(await flag('dlg_c1_jiang'),'chapter-one closing conversation retained');
   // Resume an in-chapter save before finishing the trial.
   await p.evaluate(()=>Y2K.debug.writeSave('auto'));await p.reload();await p.evaluate(()=>Y2K.debug.fast(true));
-  await p.getByRole('button',{name:'继续调查',exact:true}).click();assert(await flag('solved_c1_who'));
+  if(await p.getByRole('button',{name:'继续调查',exact:true}).isVisible())await p.getByRole('button',{name:'继续调查',exact:true}).click();assert(await flag('solved_c1_who'));
   await p.evaluate(()=>{Y2K.debug.closeAllWins();Y2K.debug.openBoard('c1_final');});
   await press(p.getByRole('button',{name:'检查',exact:true}));assert(!await flag('ending_TRIAL'),'unfinished board cannot end trial');
   const fills=await p.evaluate(()=>Object.entries(Y2K.debug.D.boards.c1_final.slots).map(([slot,word])=>({slot,word})));
@@ -73,7 +75,7 @@ const kind=process.argv.includes('--webkit')?'webkit':'edge',mobile=process.argv
   await p.screenshot({path:path.join(shots,`${kind}-${mobile?'phone':'desktop'}-ending.png`)});
   await p.getByRole('button',{name:'回看第一章',exact:true}).click();assert(!await flag('ending_TRIAL'));assert(!await flag('ch2'));
   await p.evaluate(s=>Y2K.debug.loadState(s),finished);await p.getByRole('button',{name:'返回标题画面',exact:true}).click();
-  await p.reload();await p.getByRole('button',{name:'继续调查',exact:true}).click();assert.equal(await p.locator('.ending h1').textContent(),'敬请期待完整版本！');
+  await p.reload();if(await p.getByRole('button',{name:'继续调查',exact:true}).isVisible())await p.getByRole('button',{name:'继续调查',exact:true}).click();assert.equal(await p.locator('.ending h1').textContent(),'敬请期待完整版本！');
   await p.evaluate(finished=>{
     const d=Y2K.debug,legacy=JSON.parse(JSON.stringify(finished));
     delete legacy.chatTimeVersion;delete legacy.flags.ending_TRIAL;

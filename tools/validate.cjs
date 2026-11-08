@@ -7,7 +7,7 @@ assert.equal(Object.keys(data.boards).join(','), 'c1_final');
 assert.equal(Object.keys(data.endings).join(','), 'TRIAL');
 assert.equal(data.endings.TRIAL.title, '敬请期待完整版本！');
 assert.equal(data.boards.c1_final.onSolve.ending, 'TRIAL');
-const records = [...data.chapters,...data.files,...data.dialogues,...data.mails2018,...data.items2018,...data.footage.clips,...Object.values(data.puzzles),...Object.values(data.boards)];
+const records = [...data.chapters,...data.readings,...data.files,...data.dialogues,...data.mails2018,...data.items2018,...data.footage.clips,...Object.values(data.puzzles),...Object.values(data.boards)];
 for (const record of records) {
   assert(!/\bch[2-9]\b/.test((record.requires||'')+' '+(record.trigger||'')), 'Future chapter gate: '+record.id);
   for (const key of ['onOpen','onSolve','onProps','onView']) {
@@ -18,6 +18,12 @@ for (const record of records) {
 }
 for (const d of data.dialogues) assert(data.contacts2018[d.contact], 'Missing contact '+d.id);
 const ids = new Set([...data.files,...data.items2018,...data.mails2018,...data.footage.clips].map(x=>x.id));
+assert.equal(data.readings.length, 3);
+for (const r of data.readings) {
+  assert(data.chapters.some(c => c.id === r.chapter), 'Missing reading chapter '+r.id);
+  assert(ids.has(r.requires.split('seen_')[1]), 'Missing reading source '+r.id);
+}
+assert(!data.apps.internet, 'Duplicate browser shortcut');
 for (const source of data.boards.c1_final.srcPool) assert(ids.has(source), 'Missing board source '+source);
 for (const p of Object.values(data.puzzles)) if(p.clip) assert(data.footage.clips.some(c=>c.id===p.clip));
 const engine=fs.readFileSync(path.join(root,'src/engine.js'),'utf8');

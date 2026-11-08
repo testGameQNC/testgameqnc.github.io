@@ -1,37 +1,38 @@
 {
   "title": "千年虫2试玩",
-  "date": "2026-11-01",
+  "date": "2026-11-08",
   "chapters": [
     "ch0",
     "ch1"
   ],
-  "sourceRevision": 2026103001,
+  "sourceRevision": 2026110803,
   "photos": [
-    "document-paper",
+    "youth-group",
     "unboxing",
-    "seal-base",
     "disk-back",
+    "seal-base",
     "seal-1999",
-    "youth-group"
+    "document-paper",
+    "mengfan-drawing"
   ],
   "counts": {
     "chapters": 2,
     "files": 33,
-    "dialogues": 7,
+    "dialogues": 8,
     "mails2018": 5,
     "items2018": 5,
-    "readings": 0,
+    "readings": 3,
     "clips": 2,
     "puzzles": 7,
     "boards": 1,
     "contacts2018": 3,
-    "apps": 4
+    "apps": 3
   },
-  "sourceHash": "59e30baa9d48f0ec55090362b0470ab2592ad709d27212dd1534fcb75b749e9b",
+  "sourceHash": "d53f69aabe219b19b8145bc56ab8af1185720d43c850ac39928b8d2368af2c34",
+  "sourceHashInput": "src/trial-story.js",
   "updates": [
-    "自定义名称显示",
-    "聊天日期与旧存档时间修正",
-    "触屏与中文输入法",
-    "序章及第一章最新对白与资料交接"
+    "同步修订版开场、照片与铅封缺口",
+    "按原件交接灰盘照片",
+    "保留试玩独立存档与第一章结束界面"
   ]
 }

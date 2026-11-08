@@ -172,11 +172,10 @@ const Y2K = (() => {
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const strip = (h) => String(h || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
   // Resolve legacy default names at display time so existing saves stay intact.
-  function playerText(s, html = false) {
-    const name = S ? S.player : '';
+  function playerText(s, html = false, name = S ? S.player : '') {
     return String(s == null ? '' : s).replace(/\{player\}|老K/g, () => html ? esc(name) : name);
   }
-  function fmt(s) { return playerText(_t(String(s == null ? '' : s)), true); }
+  function fmt(s, player = S ? S.player : '') { return playerText(_t(String(s == null ? '' : s)), true, player); }
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
     if (attrs) for (const [k, v] of Object.entries(attrs)) {
@@ -286,7 +285,7 @@ const Y2K = (() => {
   // ============================================================
   // 状态、条件、动作
   // ============================================================
-  // 试玩版独立存档格式，防止误导入完整版的后续章节进度。
+  // 3：现行少年宫剧情。早期档案室剧情的存档（v2）读不进现行剧情，按空存档处理。
   const VER = 'sixth-disk-trial-v1';
   let S = null;
   let flagVer = 0;
@@ -327,8 +326,37 @@ const Y2K = (() => {
     S.chTime = { date, time, at: S.clockAt };
   }
 
-  function act(a, once) {
+  // Only an explicit story checkpoint can move a conversation into a later time slot.
+  // Ordinary replies and their follow-ups belong to the current slot until the exchange ends.
+  function dialogueTime(dialogue, state) {
+    const step = dialogue.steps[state?.i || 0];
+    const received = state?.at || S.clock;
+    const segment = dialogue.startsAt && received < dialogue.startsAt ? dialogue.startsAt : received;
+    if (state?.rep || !step) return segment;
+    const checkpoint = step.at || step.action?.clock;
+    if (checkpoint) return checkpoint > segment ? checkpoint : segment;
+    if (step.choice?.length && step.choice.every(option => option.action?.clock)) {
+      return step.choice.map(option => option.action.clock).sort()[0];
+    }
+    return segment;
+  }
+  function canReachTime(target, currentDialogue) {
+    if (!target || (!currentDialogue && target <= S.clock)) return true;
+    if (S.pendingTimedActions?.some(entry => entry.action.clock < target)) return false;
+    return !D.dialogues.some(dialogue => {
+      const state = S.dlg[dialogue.id];
+      // Personal catch-ups in the epilogue can still be answered after the next email arrives.
+      if (dialogue.blocksClock === false || dialogue.id === currentDialogue || state?.done || (!state && !test(dialogue.trigger))) return false;
+      return dialogueTime(dialogue, state) < target;
+    });
+  }
+  function act(a, once, currentDialogue) {
     if (!a) return;
+    if (a.clock && !currentDialogue && a.clock > S.clock && !canReachTime(a.clock)) {
+      (S.pendingTimedActions ||= []).push({ action: a, once });
+      dirty();
+      return;
+    }
     (a.set || []).forEach(setFlag);
     (a.unset || []).forEach(f => { if (S.flags[f]) { delete S.flags[f]; flagVer++; } });
     [].concat(a.note || []).forEach(addNote);
@@ -375,23 +403,37 @@ const Y2K = (() => {
   function update() {
     dirtyT = 0;
     if (!S || titleOn) return;
+    // Save the answer now, but wait for the player to finish reading the result.
+    if (awaitingPuzzleFeedback()) { save('auto'); return; }
     if (S.flags.ending_TRIAL) { renderAll(); save('auto'); return; }
     for (let pass = 0; pass < 4; pass++) {
       const before = flagVer;
+      if (S.pendingTimedActions?.length) {
+        S.pendingTimedActions.sort((a, b) => a.action.clock.localeCompare(b.action.clock));
+        const first = S.pendingTimedActions[0];
+        if (canReachTime(first.action.clock)) { S.pendingTimedActions.shift(); act(first.action, first.once); }
+      }
       for (const c of D.chapters) {
-        if (!S.flags[c.id] && test(c.trigger)) {
-          setFlag(c.id); S.chapter = c.id; setSceneTime(c.date + ' ' + (c.time || '09:00'));
+        const starts = c.date + ' ' + (c.time || '09:00');
+        if (!S.flags[c.id] && test(c.trigger) && canReachTime(starts)) {
+          setFlag(c.id); S.chapter = c.id; setSceneTime(starts);
           cardQ.push(c);
         }
       }
       D.mails2018.forEach(m => { if (m.requires && !S.mails.includes(m.id) && test(m.requires) && (!m.date || !S.clock || m.date <= S.clock)) deliverMail(m.id); });
       D.dialogues.forEach(d => {
-        if (!S.dlg[d.id] && test(d.trigger)) { S.dlg[d.id] = { i: 0 }; (S.dlgQ[d.contact] = S.dlgQ[d.contact] || []).push(d.id); }
+        if (S.dlg[d.id] || !test(d.trigger)) return;
+        const cursor = S.heldDialogues?.[d.id] || { i: 0 };
+        cursor.at = cursor.at && cursor.at > S.clock ? cursor.at : S.clock;
+        S.dlg[d.id] = cursor;
+        if (S.heldDialogues) delete S.heldDialogues[d.id];
+        (S.dlgQ[d.contact] ||= []).push(d.id);
       });
       if (flagVer === before) break;
     }
     for (const [id, b] of Object.entries(D.boards)) {
-      if (!S.seenBoards[id] && test(b.requires)) { S.seenBoards[id] = 1; S.newBoards++; toast(_t('推理板解锁 · ') + b.title, 'good'); sfx('ok'); }
+      if (!canOpenBoard(id) && S.seenBoards[id]) { delete S.seenBoards[id]; S.newBoards = Math.max(0, S.newBoards - 1); }
+      if (!S.flags['board_' + id] && !S.seenBoards[id] && canOpenBoard(id)) { S.seenBoards[id] = 1; S.newBoards++; toast(_t('推理板解锁 · ') + b.title, 'good'); sfx('ok'); }
     }
     for (const [id, p] of Object.entries(D.puzzles)) {
       if (p.ask && !S.seenAsk[id] && test(p.requires) && !S.flags['solved_' + id]) { S.seenAsk[id] = 1; S.newNotes++; }
@@ -432,6 +474,7 @@ const Y2K = (() => {
   }
   function writeSave(slot) {
     tickPlay();
+    if (!titleOn) S.view = captureView();
     S.saved = Date.now();
     const ok = LS.set(KEY[slot], JSON.stringify(S));
     if (!ok && storageOK) { storageOK = false; toast(_t('浏览器不允许本地存储。请用"菜单 → 导出存档"手动保存进度。')); }
@@ -452,26 +495,46 @@ const Y2K = (() => {
     if (!o || o.v !== VER || (o.chapter && !['ch0', 'ch1'].includes(o.chapter))) throw Error('请使用本试玩版的存档');
     clearTimers(); running = {}; typing = {};
     clearTimeout(dirtyT); dirtyT = 0; clearTimeout(saveT); saveT = 0;
-    closeAllWins(); closeOverlay(); closeModal();
+    closeAllWins(); closeOverlay(); closeModal(false);
     S = Object.assign(fresh(o.player), o);
+    for (const [id, wasOpened] of Object.entries(S.opened || {})) {
+      if (wasOpened) setFlag('seen_' + id);
+    }
     if (D.migrateStory) { S.storyRevision = o.storyRevision || 0; D.migrateStory(S); }
     if (o.chatTimeVersion !== 1) repairChatTimes();
+    // A save can be reopened halfway through an older exchange after a later notification.
+    for (const dialogue of D.dialogues) {
+      const state = S.dlg[dialogue.id];
+      if (!state || state.done || state.at) continue;
+      const completedSteps = dialogue.steps.slice(0, state.i);
+      const lastClock = completedSteps.map(step => step.action?.clock).filter(Boolean).at(-1);
+      const history = S.chat[dialogue.contact] || [];
+      const message = history.findLast(m => m.ref ? m.ref.d === dialogue.id : completedSteps.some(step => step[m.from] && step[m.from] === m.text));
+      state.at = [lastClock, message && chatTimestamp(message)].filter(Boolean).sort().at(-1) || S.clock;
+    }
     // Keep in-chapter date advances (overnight investigation / next-day hospital) when loading.
     if (D.retime) Object.values(S.chat).forEach(log => log.forEach(m => { if (typeof m.text === 'string') m.text = D.retime(m.text); }));
     if (window.Y2K2Locale) Object.values(S.chat).forEach(log => log.forEach(m => { if (!m.ref && typeof m.text === 'string') m.text = window.Y2K2Locale.history(m.text, LANG); }));
     flagVer++; cardQ.length = 0; cardOn = false; pendingEnding = null;
+    preEndSnap = null;
     lastTick = Date.now(); playClockRunning = false;
     window.Y2KLeaderboard?.resume(S);
     ui.tab = 'msg'; ui.chat = null; ui.mail = null; ui.item = null;
-    ui._viewKey = null; ui.scroll = {}; ui.menuView = null;
+    ui._viewKey = null; ui.scroll = {}; ui.menuView = null; ui.boardLead = null;
     ui.noteTab = 'questions'; ui.noteQuery = ''; ui.itemQuery = '';
     ui.reading = null; ui.clueScope = 'current'; ui.clueGroups = {};
+    ui.clip = null; ui.frameSel = null; ui.framePuzzle = null; ui.frameMsg = ''; ui.returnBoard = null;
+    ui.phoneOpen = false; $('#phone').classList.remove('open');
     hideTitle();
-    renderScreen(); renderAll(); dirty();
-    if (S.flags.ending_TRIAL) showEnding('TRIAL');
+    renderScreen(); renderAll(); restoreView(o.view); dirty();
+    const unfinishedReview = Object.keys(S.finishRecords || {}).find(id => S.finishRecords[id]?.review === null);
+    const legacyEnding = !Object.hasOwn(o, 'activeEnding') && !S.flags.c8_begin && S.ends?.at(-1);
+    const resumeEnding = unfinishedReview || S.activeEnding || legacyEnding;
+    if (resumeEnding && D.endings[resumeEnding]) showEnding(resumeEnding, true);
   }
   function exportSave() {
     tickPlay();
+    S.view = captureView();
     const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' });
     const a = h('a', { href: URL.createObjectURL(blob), download: `${_t('千年虫2试玩存档_')}${new Date().toISOString().slice(0, 10)}.json` });
     document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
@@ -489,6 +552,64 @@ const Y2K = (() => {
   }
   const b64e = (s) => btoa(unescape(encodeURIComponent(s)));
   const b64d = (s) => decodeURIComponent(escape(atob(s.trim())));
+
+  // Save the reading position as well as story progress. Old saves need no view data.
+  const viewKeys = ['tab', 'chat', 'mail', 'item', 'phoneOpen', 'noteTab', 'noteQuery', 'itemQuery', 'reading', 'clueScope', 'clueGroups', 'scroll', 'clip', 'frameSel', 'framePuzzle', 'frameMsg', 'returnBoard'];
+  function captureView() {
+    const body = $('#phBody');
+    if (body && ui._viewKey) ui.scroll[ui._viewKey] = body.scrollTop;
+    const phone = Object.fromEntries(viewKeys.map(key => [key, ui[key]]));
+    const windows = wins.slice().sort((a, b) => a.z - b.z).map(w => ({
+      key: w.key, file: w.o.file?.id, state: w.state, min: w.min, max: w.el.classList.contains('max'),
+      rect: ['left', 'top', 'width', 'height'].map(key => parseFloat(w.el.style[key]) || 0),
+      scroll: [w.body, ...w.body.querySelectorAll('*')].map((el, index) => ({ index, top: el.scrollTop, left: el.scrollLeft })).filter(s => s.top || s.left),
+    }));
+    return JSON.parse(JSON.stringify({ phone, windows, board: $('.board')?.dataset.board || null }));
+  }
+  function restoreView(view) {
+    if (!view || typeof view !== 'object') return;
+    const phone = view.phone || {};
+    for (const key of viewKeys) if (Object.hasOwn(phone, key)) ui[key] = phone[key];
+    if (!['msg', 'mail', 'items', 'notes', 'boards', 'clips', 'list', 'menu'].includes(ui.tab)) ui.tab = 'msg';
+    if (ui.chat && !contactVisible(ui.chat)) ui.chat = null;
+    if (!S.items.includes(ui.item)) ui.item = null;
+    if (!S.mails.includes(ui.mail)) ui.mail = null;
+    ui.scroll ||= {}; ui.clueGroups ||= {}; ui.phoneOpen = narrow() && !!ui.phoneOpen;
+    // Only reopen known applications and currently available files, never saved HTML.
+    if (S.stage === 'win') for (const saved of Array.isArray(view.windows) ? view.windows : []) {
+      const st = saved.state || {}, file = saved.file && D.files.find(f => f.id === saved.file);
+      if (file) { if (!test(file.requires)) continue; openFile(file); }
+      else if (saved.key === 'explorer') openExplorer(typeof st.path === 'string' ? st.path : '');
+      else if (saved.key === 'ie' && test(D.apps.bbs?.requires)) openIE('/');
+      else if (['gexun', 'diskfix', 'compare', 'map'].includes(saved.key) && D.apps[saved.key] && test(D.apps[saved.key].requires)) openApp(saved.key);
+      else if (saved.key === 'display') openDisplay();
+      else if (saved.key === 'recycle') openRecycle();
+      else continue;
+      const win = wins.find(w => w.key === saved.key); if (!win) continue;
+      Object.assign(win.state, st);
+      if (win.state.local?.id) win.state.local = D.files.find(f => f.id === win.state.local.id) || null;
+      if (Object.hasOwn(win.state, 'playing')) win.state.playing = false;
+      const rect = Array.isArray(saved.rect) ? saved.rect : [], dk = desktop();
+      const width = Math.max(220, Math.min(Number(rect[2]) || 560, dk.clientWidth - 10));
+      const height = Math.max(140, Math.min(Number(rect[3]) || 400, dk.clientHeight - 10));
+      win.el.style.width = width + 'px'; win.el.style.height = height + 'px';
+      win.el.style.left = Math.max(0, Math.min(Number(rect[0]) || 0, dk.clientWidth - width)) + 'px';
+      win.el.style.top = Math.max(0, Math.min(Number(rect[1]) || 0, dk.clientHeight - height)) + 'px';
+      win.toggleMax(narrow() || !!saved.max); win.refresh(true);
+      const nodes = [win.body, ...win.body.querySelectorAll('*')];
+      for (const pos of saved.scroll || []) if (nodes[pos.index]) { nodes[pos.index].scrollTop = pos.top; nodes[pos.index].scrollLeft = pos.left; }
+      win.min = !!saved.min; win.el.hidden = win.min;
+    }
+    renderTasks(); $('#phone').classList.toggle('open', ui.phoneOpen); renderPhone();
+    if (view.board && canOpenBoard(view.board)) openBoard(view.board);
+  }
+  function sessionScreen(value) {
+    try {
+      const key = 'y2k2_trial_screen:' + location.pathname;
+      if (value) sessionStorage.setItem(key, value);
+      return sessionStorage.getItem(key);
+    } catch (e) { return null; }
+  }
 
   // ============================================================
   // 声音（WebAudio 合成，可关闭）
@@ -637,7 +758,7 @@ const Y2K = (() => {
   }
   let cardOn = false;
   function showCards() {
-    if (cardOn || !cardQ.length || titleOn || overlay().classList.contains('on')) return;
+    if (cardOn || !cardQ.length || titleOn || awaitingPuzzleFeedback() || overlay().classList.contains('on')) return;
     const c = cardQ.shift(); cardOn = true;
     const el = h('div', { class: 'card', tabindex: 0 },
       h('div', { class: 'num', text: c.num }),
@@ -650,8 +771,8 @@ const Y2K = (() => {
     openOverlay(el); el.focus();
   }
   function nudgeReplies() {
-    const who = Object.keys(S.wait || {}).filter(c => S.wait[c] && S.wait[c].type !== 'wait' && D.contacts2018[c]).map(c => D.contacts2018[c].name);
-    if (who.length) toast(who.join('、') + _t(' 在等你回复。打开手机「消息」，点底部的回复发送。'));
+    const who = Object.keys(S.wait || {}).filter(c => S.wait[c] && S.wait[c].type !== 'wait' && D.contacts2018[c]).map(c => contactInfo(c).name);
+    if (who.length) toast(who.join('、') + _t(' 在等你回复。打开手机里的「消息」，点对话底部的回复。'));
   }
   function showEnding(id) {
     const e = D.endings[id]; if (!e) return;
@@ -727,7 +848,8 @@ const Y2K = (() => {
       controlButton({ class: 'ph-btn', text: _t('原始大小') }, () => { fitMode = false; resize(1); }),
       file && file.documentPhoto && file.caption ? controlButton({ class: 'ph-btn', text: _t('照片说明') }, () => msgBox(_t('照片说明'), fmt(file.caption), null, true)) : null,
       file ? controlButton({ class: 'ph-btn', text: _t('属性') }, () => showProps(file, true)) : null, closeBtn);
-    const panel = h('div', { class: 'viewer-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': _t('图像查看器') }, toolbar, area);
+    const caption = file && file.caption && !file.documentPhoto ? h('div', { class: 'viewer-caption', html: fmt(file.caption) }) : null;
+    const panel = h('div', { class: 'viewer-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': _t('图像查看器') }, toolbar, area, caption);
     const el = h('div', { class: 'viewer', onclick: e => { if (e.target === el) close(); } }, panel);
     if (file) bindCtx(area, () => [[_t('属性'), () => showProps(file, true)]], null, overlay());
     panel.onkeydown = e => {
@@ -791,6 +913,7 @@ const Y2K = (() => {
     }
     draw(); return { box, button };
   }
+  function awaitingPuzzleFeedback() { return !!document.querySelector('.pz[data-awaiting-ack]'); }
   // 返回一个谜题表单元素。opts: {style:'w98'|'bios'|'login'|'bbs', onSolved, submitLabel}
   function puzzleForm(id, opts = {}) {
     const p = D.puzzles[id];
@@ -798,7 +921,7 @@ const Y2K = (() => {
     const kind = p.kind || 'text';
     const box = h('div', { class: 'pz' });
     const prompt = h('div', { class: 'prompt', html: fmt(p.prompt || '') });
-    const msg = h('div', { class: 'msg' });
+    const msg = h('div', { class: 'msg', role: 'status', 'aria-live': 'polite' });
     let getVal, focusEl;
     const inputs = h('div');
     if (kind === 'text') {
@@ -808,7 +931,7 @@ const Y2K = (() => {
     } else if (kind === 'choice' || kind === 'pick') {
       const wrap = h('div', { class: 'opts' });
       p.options.forEach((o, i) => wrap.append(h('label', {}, h('input', { type: kind === 'choice' ? 'radio' : 'checkbox', name: 'pz_' + id, value: i, id: `pz_${id}_${i}` }), h('span', { html: fmt(o) }))));
-      if (kind === 'pick') wrap.append(h('div', { style: { color: '#555' }, text: `${_t('（选择')} ${p.answerSet.length} ${_t('项）')}` }));
+      if (kind === 'pick') wrap.append(h('div', { class: 'selection-count', text: `${_t('（选择')} ${p.answerSet.length} ${_t('项）')}` }));
       inputs.append(wrap);
       getVal = () => { const sel = [...wrap.querySelectorAll('input:checked')].map(x => +x.value); return kind === 'choice' ? sel[0] : sel; };
     } else if (kind === 'multi') {
@@ -820,6 +943,15 @@ const Y2K = (() => {
     const early = !!(p.requires && (p.requires.match(/\bch\d\b/g) || []).some(c => !S.flags[c]));
     const hints = puzzleHints(id, p, opts.style === 'bios' ? '' : 'b98');
     const okBtn = controlButton({ class: opts.style === 'bios' ? '' : 'b98', text: opts.submitLabel || _t('确定') }, submit);
+    const ackBtn = controlButton({ class: opts.style === 'bios' ? '' : 'b98', text: opts.extraBtn ? _t('关闭') : _t('继续'), 'data-puzzle-ack': id }, () => box.acknowledge());
+    ackBtn.hidden = true;
+    box.acknowledge = () => {
+      if (!box.hasAttribute('data-awaiting-ack')) return;
+      box.removeAttribute('data-awaiting-ack');
+      ackBtn.disabled = true;
+      if (opts.onSolved) opts.onSolved();
+      dirty();
+    };
     let submitted = false;
     function submit() {
       if (submitted) return;
@@ -828,10 +960,15 @@ const Y2K = (() => {
       if (v == null || (Array.isArray(v) ? !v.length || v.every(x => !String(x).trim()) : !String(v).trim())) { msg.textContent = _t('请先作答。'); return; }
       if (!early && checkPuzzle(p, v)) {
         submitted = true; okBtn.disabled = true;
+        box.setAttribute('data-awaiting-ack', id);
+        inputs.querySelectorAll('input').forEach(input => { input.disabled = true; });
+        hints.button.hidden = true;
+        if (opts.extraBtn) opts.extraBtn.hidden = true;
+        okBtn.hidden = true; ackBtn.hidden = false;
         msg.className = 'msg ok'; msg.innerHTML = fmt(p.solvedText || _t('正确。'));
         if (opts.onAnswer) opts.onAnswer(v);
         solvePuzzle(id);
-        later(() => opts.onSolved && opts.onSolved(), p.solvedText ? 900 : 350);
+        save('auto');
       } else {
         sfx('err');
         let t = early ? _t('密码错误。') : (p.wrongText || opts.wrongText || _t('不对。'));
@@ -841,12 +978,17 @@ const Y2K = (() => {
       }
     }
     if (!opts.hidePrompt) box.append(prompt);
-    box.append(inputs, msg, hints.box, h('div', { class: 'row' }, hints.button, opts.extraBtn || null, okBtn));
+    box.append(inputs, msg, hints.box, h('div', { class: 'row' }, hints.button, opts.extraBtn || null, okBtn, ackBtn));
     box.focusFirst = () => { if (focusEl && !touchKeyboard()) focusEl.focus(); };
     return box;
   }
   function modalRoot() { return $('#modal'); }
-  function closeModal() { const m = modalRoot(); if (m) m.innerHTML = ''; }
+  function closeModal(acknowledge = true) {
+    const m = modalRoot(), feedback = m && m.querySelector('.pz[data-awaiting-ack]');
+    if (m) m.innerHTML = '';
+    // Clear the old dialog first: its completion callback may open another one.
+    if (acknowledge && feedback) feedback.acknowledge();
+  }
   function askPuzzle(id, onSolved, phoneStyle, contact) {
     const p = D.puzzles[id];
     if (!p) return toast(_t('缺少谜题 ') + id);
@@ -882,12 +1024,54 @@ const Y2K = (() => {
   // ============================================================
   // 推理板
   // ============================================================
+  function canOpenBoard(id) {
+    const board = D.boards[id];
+    return !!board && (!!S.flags['board_' + id] || test(board.requires));
+  }
+  function originalForBoard(id) {
+    if (S.items.includes(id)) return {type: 'item', id};
+    if (S.mails.includes(id)) return {type: 'mail', id};
+    if (D.footage.clips.some(clip => clip.id === id)) return {type: 'clip', id};
+    if (D.files.some(file => file.id === id && test(file.requires))) return {type: 'file', id};
+    if (D.gxLogs.some(log => log.id === id)) return {type: 'gx', id};
+    if (/^t\d+$/.test(id)) return {type: 'url', value: '/thread.asp?id=' + id.slice(1)};
+    if (D.mails.some(mail => mail.id === id)) return {type: 'url', value: '/admin/mail.asp?id=' + encodeURIComponent(id)};
+    return null;
+  }
+  function lockedBoardCard(id, board) {
+    const card = h('div', {class:'ph-card', 'data-locked-board':id}, h('div', {class:'k', text:_t('尚未解锁')}), h('strong', {text:board.title}));
+    if (!test(board.investigationRequires)) {
+      card.append(h('p', {text:_t('本章调查仍在进行。')}));
+      return card;
+    }
+    const missing = board.requiredSources.filter(sid => !S.flags['seen_' + sid]);
+    card.append(h('p', {text:'还有 ' + missing.length + ' 份原件没看过。看完就能填这张推理板了。'}));
+    const sid = missing.find(id => originalForBoard(id));
+    if (sid) {
+      const source = originalForBoard(sid);
+      const mail = D.mails.find(m => m.id === sid);
+      const owner = D.files.find(f => f.id === sid)?.evidenceOwner;
+      const log = D.gxLogs.find(log => log.id === sid);
+      const label = log ? '鸽讯 · ' + log.date : mail ? '站内信 · ' + mail.subject : (owner ? owner + '的' : '') + hhSourceLabel(sid);
+      const lead = h('details', {class:'ph-facts'}, h('summary', {text:_t('找一条线索')}));
+      lead.open = ui.boardLead === id;
+      lead.ontoggle = () => { if (lead.isConnected) ui.boardLead = lead.open ? id : null; };
+      lead.append(h('button', {class:'ph-source', type:'button', 'data-unread-source':sid, text:label, onclick:() => {
+        ui.boardLead = null;
+        ui.returnBoard = ['mail', 'item', 'clip'].includes(source.type) ? id : null;
+        goEvidence(source);
+      }}));
+      card.append(lead);
+    }
+    return card;
+  }
   function openBoard(id) {
+    if (!canOpenBoard(id)) return;
     const b = D.boards[id];
     const fill = S.boardFill[id] = S.boardFill[id] || {};
     let active = null;
     const done = () => !!S.flags['board_' + id];
-    const wrap = h('div', { class: 'board' });
+    const wrap = h('div', { class: 'board', 'data-board': id });
     const sheet = h('div', { class: 'sheet' });
     wrap.append(sheet);
     const close = () => { closeOverlay(); showCards(); renderAll(); };
@@ -904,11 +1088,11 @@ const Y2K = (() => {
         el.classList.toggle('srcslot', String([].concat(b.slots[s])[0]).startsWith('src:'));
         el.classList.toggle('empty', !w);
         el.classList.toggle('act', active === s);
-        el.onclick = () => { if (done()) return; active = active === s ? null : s; draw(); };
-        el.oncontextmenu = (e) => { e.preventDefault(); if (done()) return; delete fill[s]; draw(); };
+        el.onclick = () => { if (done()) return; active = s; draw(); };
+        el.oncontextmenu = (e) => { e.preventDefault(); if (done()) return; delete fill[s]; lastRes = null; draw(); dirty(); };
         el.ondragover = (e) => { e.preventDefault(); el.classList.add('drop'); };
         el.ondragleave = () => el.classList.remove('drop');
-        el.ondrop = (e) => { e.preventDefault(); const w2 = e.dataTransfer.getData('text/plain'); if (W[w2] && !done()) { fill[s] = w2; active = null; draw(); dirty(); } };
+        el.ondrop = (e) => { e.preventDefault(); const w2 = e.dataTransfer.getData('text/plain'); if (W[w2] && !done()) { fill[s] = w2; active = null; lastRes = null; draw(); dirty(); } };
       });
       const res = h('div', { class: 'res' });
       const bar = h('div', { class: 'bar' }, res);
@@ -916,29 +1100,26 @@ const Y2K = (() => {
       if (!done()) {
         bar.append(
           hints.button,
-          h('button', { class: 'bbtn', text: _t('清空'), onclick: () => { for (const k in fill) delete fill[k]; active = null; draw(); dirty(); } }),
+          h('button', { class: 'bbtn', text: _t('清空'), onclick: () => { for (const k in fill) delete fill[k]; active = null; lastRes = null; draw(); dirty(); } }),
           h('button', { class: 'bbtn pri', text: _t('检查'), onclick: () => check(res) }));
       }
       bar.append(h('button', { class: 'bbtn', text: _t('关闭'), onclick: close }));
-      sheet.append(h('h2', { text: b.title }));
+      sheet.append(h('h2', { text: b.title }), h('p', { class: 'intro', text: _t('先点空格，再选词语或原件。也可以直接拖进空格。') }));
       if (done()) sheet.append(h('div', { class: 'solved', html: (id === 'c4_final' ? _t('已整理，仍待核验。') : _t('✔ 推理成立。')) + (b.solvedText ? '<br>' + fmt(b.solvedText) : '') }));
       sheet.append(hints.box, bar, txt);
       if (!done()) {
         const bank = h('div', { class: 'bank' });
-        const used = new Set(Object.values(fill));
         const srcIds = Object.keys(W).filter(k => k.startsWith('src:'));
-        Object.entries(W).sort((a, c) => (a[0].startsWith('src:') ? 1 : 0) - (c[0].startsWith('src:') ? 1 : 0)).forEach(([wid, label], idx, arr) => {
+        Object.entries(W).sort((a, c) => (a[0].startsWith('src:') ? 1 : 0) - (c[0].startsWith('src:') ? 1 : 0) || a[1].localeCompare(c[1], 'zh-CN', {numeric:true})).forEach(([wid, label], idx, arr) => {
           if (srcIds.length && wid === srcIds[0]) bank.append(h('div', { class: 'bank-sep', text: _t('原件') }));
-          const chip = h('button', { class: 'chip' + (wid.startsWith('src:') ? ' src' : ''), draggable: 'true', text: label, style: used.has(wid) ? { opacity: .55 } : null });
+          const chip = h('button', { class: 'chip' + (wid.startsWith('src:') ? ' src' : ''), draggable: 'true', text: label });
           chip.ondragstart = (e) => e.dataTransfer.setData('text/plain', wid);
           chip.onclick = () => {
-            let s = active;
-            const isSrc = x => String([].concat(b.slots[x])[0]).startsWith('src:'), kindOk = x => isSrc(x) === wid.startsWith('src:');
-            if (!s) s = slotsInText.find(x => !fill[x] && kindOk(x)) || slotsInText.find(x => !fill[x]);
+            const s = active || slotsInText.find(slot => !fill[slot]);
             if (!s) return;
             fill[s] = wid;
-            const nextEmpty = slotsInText.slice(slotsInText.indexOf(s) + 1).find(x => !fill[x] && !isSrc(x)) || null;
-            active = nextEmpty || null;
+            active = slotsInText.slice(slotsInText.indexOf(s) + 1).find(slot => !fill[slot]) || null;
+            lastRes = null;
             draw(); dirty();
           };
           bank.append(chip);
@@ -974,9 +1155,10 @@ const Y2K = (() => {
   const ui = { tab: 'msg', chat: null, mail: null, item: null, phoneOpen: false, menuView: null, scroll: {}, noteTab: 'questions', noteQuery: '', itemQuery: '', reading: null, clueScope: 'current', clueGroups: {} };
   let running = {}, typing = {}, FAST = false;
   function pushChat(c, m) {
-    const t = phoneNow();
+    const at = (m.ref && S.dlg[m.ref.d]?.at) || sceneTime();
+    const t = phoneTime(at);
     if (m.ref && m.html) { m = Object.assign({}, m); delete m.html; }
-    (S.chat[c] = S.chat[c] || []).push(Object.assign({ at: `${t.date} ${t.hm}`, sceneAt: sceneTime() }, m));
+    (S.chat[c] = S.chat[c] || []).push(Object.assign({ at: `${t.date} ${t.hm}`, sceneAt: at }, m));
     const viewing = ui.tab === 'msg' && ui.chat === c && (!narrow() || ui.phoneOpen);
     if (m.from === 'npc' && !viewing) { S.unread[c] = (S.unread[c] || 0) + 1; sfx('msg'); }
     renderPhone();
@@ -993,7 +1175,22 @@ const Y2K = (() => {
   function runDialogues() { Object.keys(S.dlgQ).forEach(stepDlg); }
   function curDlg(c) {
     const q = S.dlgQ[c];
-    while (q && q.length) { const id = q[0]; const st = S.dlg[id]; if (!DLG[id] || st.done) { q.shift(); continue; } return [DLG[id], st]; }
+    while (q?.length) {
+      const first = q[0], state = S.dlg[first];
+      if (!DLG[first] || !state || state.done) { q.shift(); continue; }
+      // A night follow-up can already be queued when another daytime exchange unlocks
+      // on the same contact. Finish the earlier exchange before this clock boundary.
+      if (!running[c] && q.length > 1) {
+        let earliest = 0;
+        for (let i = 1; i < q.length; i++) {
+          const candidate = DLG[q[i]], queued = S.dlg[q[i]];
+          if (!candidate || !queued || queued.done) continue;
+          if (dialogueTime(candidate, queued) < dialogueTime(DLG[q[earliest]], S.dlg[q[earliest]])) earliest = i;
+        }
+        if (earliest) { q.unshift(q.splice(earliest, 1)[0]); delete S.wait[c]; }
+      }
+      return [DLG[q[0]], S.dlg[q[0]]];
+    }
     return null;
   }
   function typeDelay(text) { return Math.min(2600, 650 + String(text || '').length * 40); }
@@ -1005,10 +1202,18 @@ const Y2K = (() => {
     return !!m && +m[1] < cur;
   }
   function stepDlg(c) {
-    if (running[c] || titleOn) return;
+    if (running[c] || titleOn || awaitingPuzzleFeedback()) return;
     const cur = curDlg(c);
     if (!cur) { delete S.wait[c]; return; }
     const [d, st] = cur;
+    if (!canReachTime(dialogueTime(d, st), d.id)) {
+      delete S.wait[c];
+      const pending = S.pendingTimedActions?.[0];
+      if (pending && canReachTime(pending.action.clock)) dirty();
+      return;
+    }
+    const begins = d.steps[st.i]?.at || d.startsAt;
+    if (begins && (!st.at || st.at < begins)) { st.at = begins; setSceneTime(begins); }
     const stale = isStale(d);
     const next = () => { st.i++; stepDlg(c); };
     const timed = (ms, fn, showTyping) => {
@@ -1031,17 +1236,22 @@ const Y2K = (() => {
       S.wait[c] = { type: 'reply' }; renderPhone(); return;
     }
     if (s.sys !== undefined) return timed(400, () => { pushChat(c, { from: 'sys', text: s.sys, ref: { d: d.id, i: st.i } }); next(); });
-    if (s.action) { act(s.action); return next(); }
+    if (s.action) {
+      if (s.action.clock && (!st.at || s.action.clock > st.at)) st.at = s.action.clock;
+      act(s.action, true, d.id); return next();
+    }
     if (s.delay) return timed(s.delay, next);
     if (s.wait) { if (stale || test(s.wait)) { delete S.wait[c]; return next(); } S.wait[c] = { type: 'wait' }; return; }
     if (s.puzzle) { if (stale || solved(s.puzzle)) { delete S.wait[c]; return next(); } S.wait[c] = { type: 'puzzle', id: s.puzzle }; renderPhone(); return; }
     if (s.choice) {
       if (stale) {
-        let k = s.choice.findIndex(o => !(o.action && o.action.ending)); if (k < 0) k = 0;
+        let k = s.choice.findIndex(o => test(o.requires) && !o.action?.ending);
+        if (k < 0) k = s.choice.findIndex(o => test(o.requires));
+        if (k < 0) return;
         const opt = s.choice[k]; delete S.wait[c];
         pushChat(c, { from: 'me', text: opt.text, ref: { d: d.id, i: st.i, o: k } });
         st.rep = (opt.reply || []).length ? { i: st.i, o: k, r: 0 } : null; st.i++;
-        act(opt.action); dirty(); return stepDlg(c);
+        act(opt.action, true, d.id); dirty(); return stepDlg(c);
       }
       S.wait[c] = { type: 'choice' }; renderPhone(); return;
     }
@@ -1051,7 +1261,9 @@ const Y2K = (() => {
     const cur = curDlg(c); if (!cur || running[c] || titleOn) return;
     const [d, st] = cur, s = d.steps[st.i];
     if (d.id !== dialogue || st.i !== step || !s || s.me === undefined || !S.wait[c] || S.wait[c].type !== 'reply') return;
+    if (!canReachTime(dialogueTime(d, st), d.id)) { delete S.wait[c]; dirty(); return; }
     markInteraction(); delete S.wait[c];
+    if (d.blocksClock === false && (!st.at || st.at < S.clock)) st.at = S.clock;
     const ref = { d: d.id, i: st.i }; st.i++;
     pushChat(c, { from: 'me', text: s.me, html: s.html, ref });
     sfx('click'); dirty(); stepDlg(c);
@@ -1059,14 +1271,20 @@ const Y2K = (() => {
   function choose(c, idx, dialogue, step) {
     const cur = curDlg(c); if (!cur) return;
     const [d, st] = cur; const s = d.steps[st.i];
-    if (running[c] || titleOn || !s || !s.choice || !s.choice[idx] || !S.wait[c] || S.wait[c].type !== 'choice') return;
+    if (running[c] || titleOn || !s || !s.choice || !s.choice[idx] || !test(s.choice[idx].requires) || !S.wait[c] || S.wait[c].type !== 'choice') return;
     if (dialogue != null && (d.id !== dialogue || st.i !== step)) return;
+    if (!canReachTime(dialogueTime(d, st), d.id)) { dirty(); return; }
     markInteraction();
+    if (d.programmeCheckpoint && !S.programmeCheckpoint && preEndSnap) {
+      S.programmeCheckpoint = JSON.parse(preEndSnap);
+      S.programmeCheckpoint.view = captureView();
+    }
     const opt = s.choice[idx];
     delete S.wait[c];
     pushChat(c, { from: 'me', text: opt.text, ref: { d: d.id, i: st.i, o: idx } });
     st.rep = (opt.reply || []).length ? { i: st.i, o: idx, r: 0 } : null; st.i++;
-    act(opt.action);
+    if (opt.action?.clock) st.at = opt.action.clock;
+    act(opt.action, true, d.id);
     sfx('click');
     dirty(); stepDlg(c);
   }
@@ -1100,6 +1318,13 @@ const Y2K = (() => {
       h('button', { class: 'ph-btn', type: 'button', text: _t('一次拓完'), onclick: () => { markInteraction(); finish(); } }));
     return (rubCache[it.id] = box);
   }
+  function contactInfo(id) {
+    const info = D.contacts2018[id];
+    if (!info?.afterMessages) return info;
+    const update = (S.chat[id] || []).findLast(message => message.from === 'sys' && info.afterMessages[msgText(message)]);
+    return update ? {...info, ...info.afterMessages[msgText(update)]} : info;
+  }
+
   function contactVisible(id) { const c = D.contacts2018[id]; return c && test(c.requires) && ((S.chat[id] && S.chat[id].length) || S.dlgQ[id]); }
 
   function phoneSearch(label, key, onSearch) {
@@ -1121,10 +1346,10 @@ const Y2K = (() => {
       if (!list.includes(source.id)) return toast(_t('这份资料尚未收到。'));
       ui.tab = source.type === 'item' ? 'items' : 'mail'; ui.chat = null; ui.reading = null;
       ui.item = source.type === 'item' ? source.id : null; ui.mail = source.type === 'mail' ? source.id : null;
-      renderPhone(); return;
+      if (narrow()) togglePhone(true); else renderPhone(); return;
     }
     if (source.type === 'chat') { ui.tab = 'msg'; ui.chat = source.id; ui.reading = null; ui.item = null; ui.mail = null; renderPhone(); return; }
-    if (source.type === 'board') { if (D.boards[source.id] && test(D.boards[source.id].requires)) openBoard(source.id); return; }
+    if (source.type === 'board') { if (canOpenBoard(source.id)) openBoard(source.id); return; }
     if (S.stage !== 'win') return;
     if (source.type === 'app') { if (narrow()) togglePhone(false); return openApp(source.id); }
     if (source.type === 'file') {
@@ -1136,15 +1361,17 @@ const Y2K = (() => {
     } else if (source.type === 'url') {
       if (narrow()) togglePhone(false); openIE(source.value);
     } else if (source.type === 'gx') {
-      if (narrow()) togglePhone(false); withLock((D.apps.gexun || {}).lock, openGexun);
+      if (narrow()) togglePhone(false);
+      withLock(D.apps.gexun?.lock, () => openGexun(source.id));
     }
   }
   function sourceButton(source, label) { return h('button', { class: 'ph-source', type: 'button', text: label || _t('查看原件'), onclick: () => goEvidence(source) }); }
-  function noteChapter(id) { const m = /^c([0-6])_/.exec(id); return m ? 'ch' + m[1] : (S.noteCh[id] || S.chapter); }
+  function noteChapter(id) { const m = /^c([0-7])_/.exec(id); return m ? 'ch' + m[1] : (S.noteCh[id] || S.chapter); }
   function noteSource(id) {
     const has = a => a && [].concat(a.note || []).includes(id);
     for (const f of D.files) { if (has(f.onOpen)) return { type: 'file', id: f.id }; if (has(f.onProps)) return { type: 'props', id: f.id }; }
     for (const t of D.threads) if (has(t.onOpen) || has(t.onSource)) return { type: 'url', value: '/thread.asp?id=' + t.id };
+    for (const m of D.mails) if (has(m.onOpen)) return { type: 'url', value: '/admin/mail.asp?id=' + encodeURIComponent(m.id) };
     for (const m of D.mails2018) if (has(m.onOpen)) return { type: 'mail', id: m.id };
     for (const it of D.items2018) if (has(it.onOpen)) return { type: 'item', id: it.id };
     for (const l of D.gxLogs) if (has(l.onOpen)) return { type: 'gx', id: l.id };
@@ -1152,12 +1379,37 @@ const Y2K = (() => {
   }
   function renderJournal(body) {
     const journal = D.journal[S.chapter]; if (!journal) return;
-    body.append(h('section', { class: 'ph-journal' },
-      h('div', { class: 'k', text: _t('本章调查') }), h('h3', { text: journal.question })));
+    const next = nextJournalStep();
+    body.append(h('section', { class: 'ph-journal', 'data-investigation': next?.until },
+      h('div', { class: 'k', text: _t('本章调查') }), h('h3', { text: journal.question }),
+      next ? h('p', { text: next.text }) : null,
+      next ? sourceButton(next.source, _t('前往资料')) : null));
     const facts = (journal.facts || []).filter(f => test(f.requires));
     if (facts.length) body.append(h('details', { class: 'ph-facts', open: true },
       h('summary', { text: _t('目前能确认的事') + ' · ' + facts.length }),
       h('ul', {}, facts.map(f => h('li', { text: f.text })))));
+  }
+  function nextJournalStep() {
+    const available = source => {
+      if (!source) return false;
+      if (source.type === 'item') return S.items.includes(source.id);
+      if (source.type === 'mail') return S.mails.includes(source.id);
+      if (source.type === 'chat') return contactVisible(source.id);
+      if (source.type === 'app') return S.stage === 'win' && D.apps[source.id] && test(D.apps[source.id].requires);
+      if (source.type === 'board') return D.boards[source.id] && test(D.boards[source.id].requires);
+      if (source.type === 'clip') return clipsOpen() && clipList().some(c => c.id === source.id);
+      if (['file', 'props'].includes(source.type)) return S.stage === 'win' && D.files.some(f => f.id === source.id && test(f.requires));
+      return false;
+    };
+    return ((D.journal[S.chapter] || {}).steps || []).find(step => {
+      if (test(step.until) || !test(step.requires) || !available(step.source)) return false;
+      const puzzle = step.until.startsWith('solved_') && D.puzzles[step.until.slice(7)];
+      // Reading is the next action; other story prerequisites still apply.
+      if (puzzle && !test((puzzle.requires || '').replace(/\bseen_\w+\b/g, 'start'))) return false;
+      const dialogue = step.until.startsWith('dlg_') && DLG[step.until.slice(4)];
+      if (dialogue && !test(dialogue.trigger)) return false;
+      return true;
+    });
   }
   function renderClues(body, controls) {
     const results = h('div', { class: 'ph-search-results' });
@@ -1186,7 +1438,7 @@ const Y2K = (() => {
         });
         results.append(section);
       }
-      if (!ids.length) results.append(h('div', { class: 'ph-card done', text: q ? _t('没有找到。') : _t('这里还没有线索。可以切换范围回看之前的记录。') }));
+      if (!ids.length) results.append(h('div', { class: 'ph-card done', text: q ? _t('没有找到。') : _t('这一章还没记下线索。点上方的章节名，可以翻看其他章节的笔记。') }));
       body.scrollTop = 0;
     };
     scope.onchange = () => { ui.clueScope = scope.value; show(ui.noteQuery); };
@@ -1212,7 +1464,7 @@ const Y2K = (() => {
         h('span', { text: r.title }), h('small', { text: (S.readingSeen || {})[r.id] ? _t('已读') : _t('未读') }),
         r.intro ? h('p', { text: r.intro }) : null)));
     });
-    if (!readings.length) body.append(h('div', { class: 'ph-empty', text: _t('暂无记录。') }));
+    if (!readings.length) body.append(h('div', { class: 'ph-empty', text: _t('读过的信、看过的录像里，有些片段会收在这里，随时可以回来翻。') }));
   }
 
   function renderPhone() {
@@ -1253,17 +1505,27 @@ const Y2K = (() => {
     let stick = false;
     if (ui.tab === 'msg') {
       if (ui.chat) {
-        const c = ui.chat, info = D.contacts2018[c];
+        const c = ui.chat, info = contactInfo(c);
         title(info.name, typing[c] ? _t('对方正在输入…') : info.sub, () => { ui.chat = null; renderPhone(); });
         const box = h('div', { class: 'chat' });
-        let lastDay = '';
+        let previousAt = '';
         (S.chat[c] || []).forEach(m => {
-          const day = chatTime(m).date;
-          if (day && day !== lastDay) { box.append(h('div', { class: 'chat-day', text: day })); lastDay = day; }
+          const at = chatTimestamp(m);
+          if (at && at !== previousAt) {
+            const time = phoneTime(at);
+            const newDay = at.slice(0, 10) !== previousAt.slice(0, 10);
+            box.append(h('time', { class: 'chat-stamp', datetime: at.replace(' ', 'T') },
+              h('span', { class: newDay ? 'chat-day' : 'chat-date', text: time.date }), ' ', h('span', { text: time.hm })));
+            previousAt = at;
+          }
           const b = h('div', { class: 'bub ' + m.from, title: m.at || '' });
           if (m.who) b.append(h('b', { class: 'who', text: m.who }));
           const mt = msgText(m), mh = msgHtml(m);
           if (mt) b.append(h('span', { html: fmt(esc(mt)).replace(/&lt;br&gt;/g, '\n') }));
+          const attachments = m.ref && DLG[m.ref.d]?.steps[m.ref.i]?.attachments;
+          if (attachments) {
+            for (const source of attachments) b.append(sourceButton(source, source.label));
+          }
           if (mh) {
             b.classList.add('media');
             const pic = h('div', { class: 'pic', html: fmt(mh), role: 'button', tabindex: 0, 'aria-label': _t('放大图片') });
@@ -1282,7 +1544,9 @@ const Y2K = (() => {
             const step = st.i;
             foot.hidden = false; foot.append(h('div', { class: 'ph-reply-label', text: _t('点击发送回复') }));
             if (w.type === 'reply') foot.append(h('button', { class: 'ph-btn', html: fmt(esc(d.steps[step].me)), onclick: () => sendReply(c, d.id, step) }));
-            else d.steps[step].choice.forEach((o, i) => foot.append(h('button', { class: 'ph-btn', html: fmt(esc(o.text)), onclick: () => choose(c, i, d.id, step) })));
+            else d.steps[step].choice.forEach((o, i) => {
+              if (test(o.requires)) foot.append(h('button', { class: 'ph-btn', html: fmt(esc(o.text)), onclick: () => choose(c, i, d.id, step) }));
+            });
           }
         } else if (w && w.type === 'puzzle') {
           const p = D.puzzles[w.id];
@@ -1293,9 +1557,9 @@ const Y2K = (() => {
         title(_t('消息'));
         const list = h('div', { class: 'ph-list' });
         Object.keys(D.contacts2018).filter(contactVisible).forEach(id => {
-          const info = D.contacts2018[id]; const log = S.chat[id] || []; const last = log[log.length - 1];
+          const info = contactInfo(id); const log = S.chat[id] || []; const last = log[log.length - 1];
           const w = S.wait[id] && S.wait[id].type !== 'wait';
-          list.append(h('button', { class: 'ph-item', onclick: () => { ui.chat = id; renderPhone(); } },
+          list.append(h('button', { class: 'ph-item', 'data-contact': id, onclick: () => { ui.chat = id; renderPhone(); } },
             h('div', { class: 'av', text: info.avatar || info.name[0] }),
             h('div', { class: 'mid' }, h('b', { text: info.name }), h('span', { text: typing[id] ? _t('对方正在输入…') : w ? _t('【等你回复】') : last ? (last.from === 'me' ? _t('我：') : last.who ? last.who + '：' : '') + playerText(msgText(last) || _t('[图片]')) : '' })),
             h('div', { class: 'rt' }, h('span', { text: chatListTime(last) }), S.unread[id] ? h('span', { class: 'cnt', text: String(S.unread[id]) }) : null)));
@@ -1312,8 +1576,10 @@ const Y2K = (() => {
       } else {
         title(_t('邮件'), `${_t('收件箱')} ${S.mails.length}`);
         const list = h('div', { class: 'ph-list' });
-        S.mails.slice().reverse().forEach(id => {
-          const m = MAIL26[id]; if (!m) return;
+        const inbox = S.mails.slice().reverse().map(id => MAIL26[id]).filter(Boolean);
+        inbox.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        inbox.forEach(m => {
+          const id = m.id;
           list.append(h('button', { class: 'ph-item', onclick: () => { ui.mail = id; renderPhone(); } },
             h('div', { class: 'av', text: '✉' }),
             h('div', { class: 'mid' }, h('b', { text: strip(fmt(m.subject)), style: S.mailRead[id] ? { fontWeight: 400 } : null }), h('span', { text: m.from })),
@@ -1354,9 +1620,14 @@ const Y2K = (() => {
       controls.append(pages); body.append(controls);
       if (ui.noteTab === 'questions') {
         renderJournal(body);
-        if (!asks.length) body.append(h('div', { class: 'ph-card done', text: _t('暂无待核对的问题。') }));
+        if (!asks.length && !nextJournalStep()) body.append(h('div', { class: 'ph-card done', text: _t('暂无待核对的问题。') }));
         const addQuestions = (list, host) => list.forEach(([id, p]) => host.append(h('div', { class: 'ph-card q', role: 'button', tabindex: 0, onclick: () => askPuzzle(id, null, true), onkeydown: (e) => { if (confirmInput(e)) askPuzzle(id, null, true); } }, h('div', { class: 'k', text: _t('点击作答') }), h('div', { html: fmt(p.title) }))));
-        addQuestions(asks.filter(([id]) => noteChapter(id) === S.chapter), body);
+        const current = asks.filter(([id]) => noteChapter(id) === S.chapter);
+        addQuestions(current.slice(0, 2), body);
+        if (current.length > 2) {
+          const more = h('details', { class: 'ph-facts' }, h('summary', { text: _t('本章其他待答问题') + ' · ' + (current.length - 2) }));
+          addQuestions(current.slice(2), more); body.append(more);
+        }
         const old = asks.filter(([id]) => noteChapter(id) !== S.chapter);
         if (old.length) { const fold = h('details', { class: 'ph-facts' }, h('summary', { text: _t('之前未解的问题') + ' · ' + old.length })); addQuestions(old, fold); body.append(fold); }
       } else if (ui.noteTab === 'clues') {
@@ -1365,13 +1636,14 @@ const Y2K = (() => {
         renderReadings(body);
       } else {
         S.collected.forEach(cid => { const c = D.collectibles[cid]; if (!c) return; body.append(h('div', { class: 'ph-card' }, h('div', { class: 'k', text: c.where || '' }), h('div', { style: { fontWeight: 600 }, html: fmt(c.title) }), h('div', { style: { whiteSpace: 'pre-wrap', fontFamily: 'var(--font-hand)', fontSize: '15px', marginTop: '4px' }, html: fmt(c.text || '') }))); });
-        if (!S.collected.length) body.append(h('div', { class: 'ph-card done', text: _t('五个人1999年写给四十岁自己的话，散落在胶囊软盘的各个角落。') }));
+        if (!S.collected.length) body.append(h('div', { class: 'ph-card done', text: _t('1999年，他们每人都给四十岁的自己留了一句话。那些话还在当年的软盘里。') }));
       }
     } else if (ui.tab === 'boards') {
       title(_t('推理'), _t('把线索拼成结论'));
-      const list = Object.entries(D.boards).filter(([id, b]) => test(b.requires));
+      const list = Object.entries(D.boards).filter(([id]) => canOpenBoard(id) || id === S.chapter.replace('ch', 'c') + '_final');
       if (!list.length) body.append(h('div', { class: 'ph-empty', text: _t('暂无记录。') }));
       list.reverse().forEach(([id, b]) => {
+        if (!canOpenBoard(id)) { body.append(lockedBoardCard(id, b)); return; }
         const ok = S.flags['board_' + id];
         body.append(h('div', { class: 'ph-card q' + (ok ? ' done' : ''), role: 'button', tabindex: 0, style: ok ? { borderLeftColor: 'var(--ph-good)' } : null, onclick: () => openBoard(id), onkeydown: (e) => { if (confirmInput(e)) openBoard(id); } },
           h('div', { class: 'k', text: ok ? _t('已完成') : _t('进行中 · 点击打开') }), h('div', { style: { fontWeight: 600 }, text: b.title })));
@@ -1382,6 +1654,11 @@ const Y2K = (() => {
       renderHouseholds(title, body);
     } else if (ui.tab === 'menu') {
       renderMenu(title, body);
+    }
+    if (ui.returnBoard && ['items', 'mail', 'clips'].includes(ui.tab)) {
+      body.prepend(h('button', {class:'ph-source', type:'button', text:_t('返回推理'), onclick:() => {
+        ui.returnBoard = null; ui.tab = 'boards'; renderPhone();
+      }}));
     }
     if (stick) {
       if (sameView) body.scrollTop = keepBottom ? body.scrollHeight : prevScroll;
@@ -1441,12 +1718,12 @@ const Y2K = (() => {
       for (const button of tabs.children) { button.classList.toggle('on', button.dataset.tab === tab); button.setAttribute('aria-selected', button.dataset.tab === tab ? 'true' : 'false'); }
       if (tab === 'controls') {
         for (const [title, text] of [
-          ['电脑与手机', '双击电脑图标打开程序，拖动标题栏移动窗口，右键文件查看属性。触屏设备轻点图标、长按文件；手机可用右下角按钮展开。宽表格可以左右滑动。'],
-          ['材料与笔记', '手机里可以查看消息、邮件、物品和录像。打开原件后，已发现的线索收入笔记；日常片段留在“旧事”。“待解决的问题”保留当前需要核对的问题。'],
-          ['解题操作', '文字题按问题填写；选择题点选对应选项。录像题先选中一帧，再提交；放大照片不会替你选帧。'],
-          ['推理板', '先点空格再点词语，也可拖动；右键空格删除填词，“清空”清除全部。〔依据〕空格须放对应原件。关闭推理板后仍会保留填写内容。'],
-          ['试玩范围', '本试玩版包含序章「六张盘」与第一章「封条」。完成第一章推理板后显示试玩结束画面；后续调查将在完整版本展开。'],
-          ['提示与存档', '解谜提示在每道题的答题区域旁，推理板也有提示按钮。主动展开一级才计一次，最后一级可能直接给出答案；重看已展开的提示不再计数。游戏自动保存进度，手机菜单也可手动存档、导出或导入；更换浏览器前请先导出存档。'],
+          ['电脑与手机', '用鼠标双击图标打开程序，拖动标题栏移动窗口。想看文件属性，就右键点文件。用触屏时，轻点图标即可打开，长按文件可看属性。点右下角的手机按钮可以展开手机。表格太宽时，可以左右滑。'],
+          ['材料与笔记', '手机里收着消息、邮件、物品和录像。读过原件，线索就会记进笔记。想重读他们从前的事，可以翻“旧事”。忘了接下来要查什么，就看“待解决的问题”。'],
+          ['解题操作', '文字题直接输入答案，选择题点选选项。看录像时，点照片可以放大看细节。要提交答案，先选中那一帧。'],
+          ['推理板', '先点空格再点词语，也可以把词语拖进去。右键空格删除填词，"清空"清除全部。〔依据〕空格须放对应原件。关闭推理板后仍会保留填写内容。'],
+          ['试玩范围', '试玩版可以玩到第一章。完成「封条」的推理板，试玩就结束了。'],
+          ['提示与存档', '每道题和每张推理板旁边都有提示。每看一条新提示计一次，回头重看不计。最后一条可能会给出答案。进度会自动保存，也可以在手机菜单里手动存档。想换个浏览器接着玩，先导出存档，再到新浏览器里导入。'],
           ['作品说明', '这是虚构故事。电脑内的通讯、网页和系统操作均为剧情模拟，不连接真实人物或旧网站。音乐资料仅记录歌曲信息，不附商业录音。'],
         ]) { body.append(h('h3', { text: _t(title) })); paragraph(_t(text)); }
       } else {
@@ -1508,7 +1785,7 @@ const Y2K = (() => {
     tl.append(h('div', { class: 'title-topbar' }, trialInfo, langs), h('div', { class: 'title-content' }, clk, h('h1', { html: _t('千年<span>虫</span> 2') }), h('div', { class: 'sub', text: _t('未寄出的明天 · 试玩版') }), menu, panel,
       h('div', { class: 'foot' }, h('div', { class: 'community', text: _t('QQ群') + '：1130040971' }), h('div', { text: _t('本作纯属虚构 · 建议用电脑上的 Chrome / Edge 打开 · 进度自动保存在本浏览器') }))));
   }
-  function hideTitle() { titleOn = false; syncPlayClock(); const tl = $('#title'); tl.hidden = true; tl.innerHTML = ''; tl.classList.remove('panel-open'); window.Y2KStats?.setPlaying(true); showCards(); }
+  function hideTitle() { titleOn = false; sessionScreen('game'); syncPlayClock(); const tl = $('#title'); tl.hidden = true; tl.innerHTML = ''; tl.classList.remove('panel-open'); window.Y2KStats?.setPlaying(true); showCards(); }
   function titlePanel(host, title, opener) {
     host.innerHTML = '';
     const tl = $('#title'); tl.classList.add('panel-open');
@@ -1538,7 +1815,7 @@ const Y2K = (() => {
     };
     inp.onkeydown = (e) => { if (confirmInput(e)) go(); };
     titlePanel(panel, _t('你的昵称'), opener).append(
-      h('div', { class: 'muted', text: _t('你在梧城开一家电脑维修铺，也拍修老电脑的视频。七中那期上线以后，找你的人多了起来。别人会怎样称呼你？') }), h('div', { style: { height: '8px' } }), inp,
+      h('div', { class: 'muted', text: _t('你在梧城开了家电脑维修铺，有时把修老电脑的过程拍下来。自从发了七中那期视频，来找你修东西的人也多了。街坊平时怎么叫你？') }), h('div', { style: { height: '8px' } }), inp,
       ...(hasSave ? [h('div', { class: 'muted', style: { marginTop: '8px' }, text: _t('注意：开始新调查会覆盖自动存档（手动存档位不受影响）。') })] : []),
       h('div', { class: 'row' }, h('button', { class: 'tbtn', text: _t('开始'), onclick: go })));
     if (!touchKeyboard()) inp.focus();
@@ -1564,7 +1841,7 @@ const Y2K = (() => {
     if (S.stage === 'off') {
       sc.append(h('div', { class: 'off' },
         controlButton({ class: 'power', 'aria-label': _t('开机'), html: '⏻' }, powerOn),
-        h('div', { html: _t('工作台上是你的读盘机：一台留着软驱、装着 Windows 98 的老电脑。') })));
+        h('div', { html: _t('工作台上那台装着 Windows 98 的老电脑还留着软驱，你平时就用它读软盘。') })));
     } else if (S.stage === 'win') {
       buildDesktop();
     } else {
@@ -1753,6 +2030,7 @@ const Y2K = (() => {
     guardWinInteraction(win);
     win.setTitle = (t) => { win.title = t; tt.textContent = t; renderTasks(); };
     win.refresh = (force) => {
+      if (body.querySelector('.pz[data-awaiting-ack]')) return;
       if (!force && win.isInteracting()) { win.refreshPending = true; return; }
       if (!force && el.contains(document.activeElement) && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
       if (force) win.resetInteraction();
@@ -1779,7 +2057,7 @@ const Y2K = (() => {
     wins.forEach(x => x.el.classList.toggle('active', x === w));
     renderTasks(); closeStart();
   }
-  function closeWin(w, force = false) { if (!force && w.requestClose) return w.requestClose(); w.interactionCleanup(); w.el.remove(); wins = wins.filter(x => x !== w); w.o.onClose && w.o.onClose(w); renderTasks(); }
+  function closeWin(w, force = false) { if (!force && w.requestClose) return w.requestClose(); if (w.body.querySelector('.pz[data-awaiting-ack]')) dirty(); w.interactionCleanup(); w.el.remove(); wins = wins.filter(x => x !== w); w.o.onClose && w.o.onClose(w); renderTasks(); }
   function closeAllWins() { wins.forEach(w => { w.interactionCleanup(); w.el.remove(); w.o.onClose && w.o.onClose(w); }); wins = []; }
   function dragify(el, handle, win) {
     handle.addEventListener('pointerdown', (e) => {
@@ -1962,7 +2240,7 @@ const Y2K = (() => {
   // 打开文件
   function openFile(f) {
     if (!f || !test(f.requires)) return toast(_t('这份资料尚未恢复。'));
-    if (!snapOK(f) && !S.opened[f.id]) return toast(_t('这份原件不在当前时间点，请先切换系统还原点。'));
+    if (!snapOK(f) && !S.opened[f.id]) return toast(_t('这份原件没有收在当前的备份里。换个系统还原点再找找。'));
     markInteraction();
     const go = () => {
       opened(f.id, f.onOpen);
@@ -2041,7 +2319,7 @@ const Y2K = (() => {
       raw = normPath(raw).replace(/^([ac]):/i, (_, d) => d.toUpperCase() + ':');
       if (!/^[AC]:/.test(raw)) raw = (p ? p + '/' : '') + raw;
       const node = FS.nodes[raw], f = nodeFile(raw);
-      if (!node || !reachablePath(raw) || (!f && (!node.folder || !folderVisible(raw)))) return msgBox('资源管理器', '找不到指定的路径。请检查文件名和文件夹是否存在。');
+      if (!node || !reachablePath(raw) || (!f && (!node.folder || !folderVisible(raw)))) return msgBox('资源管理器', '找不到指定的路径。请检查文件夹名称是否写对。');
       const locks = []; for (let q = raw; q && q !== 'A:' && q !== 'C:'; q = parentOf(q)) { const e = folderEntry(q); if (e?.lock && !solved(e.lock)) locks.unshift(e.lock); }
       const enter = () => { if (locks.length) return withLock(locks.shift(), enter); if (f) openFile(f); else go(raw); }; enter();
     };
@@ -2159,7 +2437,7 @@ const Y2K = (() => {
     } });
   }
   function openImage(f) {
-    openWin({ key: 'img_' + f.id, title: nameOf(f.path) + _t(' - 图像查看器'), icon: 'img', file: f, w: 640, h: 500, bodyClass: '', state: { z: null }, onClose: win => win.imageResize && win.imageResize.disconnect(), render: (win) => {
+    openWin({ key: 'img_' + f.id, title: nameOf(f.path) + _t(' - 图像查看器'), icon: 'img', file: f, w: 640, h: 500, bodyClass: 'in image-body', state: { z: null }, onClose: win => win.imageResize && win.imageResize.disconnect(), render: (win) => {
       menus(win, [[_t('文件(F)'), [[_t('属性'), () => showProps(f)], [_t('关闭'), () => closeWin(win)]]]]);
       const canvas = h('div', { class: 'canvas', html: fmt(f.html || ''), tabindex: 0, role: 'button', 'aria-label': _t('全屏查看'), ondblclick: () => viewImage(fmt(f.html), f), onkeydown: e => { if (confirmInput(e)) viewImage(fmt(f.html), f); } });
       const size = imageSize(canvas);
@@ -2169,30 +2447,28 @@ const Y2K = (() => {
       win.top.append(h('div', { class: 'toolbar98' },
         controlButton({ class: 'b98', text: _t('放大 +') }, () => zoom(.25)),
         controlButton({ class: 'b98', text: _t('缩小 −') }, () => zoom(-.25)),
-        controlButton({ class: 'b98', text: _t('适应窗口') }, () => { win.state.z = null; win.updateImageSize(); win.body.scrollLeft = 0; win.body.scrollTop = 0; }),
+        controlButton({ class: 'b98', text: _t('适应窗口') }, () => { win.state.z = null; win.updateImageSize(); stage.scrollLeft = 0; stage.scrollTop = 0; }),
         controlButton({ class: 'b98', text: _t('原始大小') }, () => { win.state.z = 1; win.updateImageSize(); }),
         controlButton({ class: 'b98', text: _t('全屏查看') }, () => viewImage(fmt(f.html), f)),
         f.documentPhoto && f.caption ? controlButton({ class: 'b98', text: _t('照片说明') }, () => msgBox(_t('照片说明'), fmt(f.caption))) : null,
         controlButton({ class: 'b98', text: _t('属性') }, () => showProps(f)),
         value));
-      const caption = f.caption ? h('div', { class: 'cap', html: fmt(f.caption) }) : null;
-      win.body.append(h('div', { class: 'imgview' }, canvas, caption));
+      // The caption stays outside the zoom surface, so wrapping text cannot feed
+      // back into image scaling or make scrollbars repeatedly appear/disappear.
+      const stage = h('div', { class: 'image-stage', tabindex: 0, 'aria-label': _t('图片，可滚动查看') }, h('div', { class: 'imgview' }, canvas));
+      const caption = f.caption ? h('div', { class: 'image-caption', html: fmt(f.caption) }) : null;
+      win.body.append(stage, caption);
       win.updateImageSize = () => {
-        scale = win.state.z == null ? Math.min(1, Math.max(1, win.body.clientWidth - 24) / size.w) : win.state.z;
-        canvas.style.width = Math.round(size.w * scale) + 'px';
-        if (caption) caption.style.width = canvas.style.width;
-        if (win.state.z == null && !f.documentPhoto && canvas.querySelector('svg, img')) {
-          const available = Math.max(60, win.body.clientHeight - 24 - (caption ? caption.offsetHeight + 8 : 0));
-          if (canvas.offsetHeight > available) {
-            scale *= available / canvas.offsetHeight;
-            canvas.style.width = Math.round(size.w * scale) + 'px';
-            if (caption) caption.style.width = canvas.style.width;
-          }
-        }
+        scale = win.state.z == null ? Math.min(1,
+          Math.max(1, stage.clientWidth - 24) / size.w,
+          f.documentPhoto ? 1 : Math.max(1, stage.clientHeight - 24) / size.h) : win.state.z;
+        canvas.style.width = Math.max(1, Math.floor(size.w * scale)) + 'px';
         value.textContent = Math.round(scale * 100) + '%';
       };
       win.updateImageSize();
-      if (!win.imageResize) { win.imageResize = new ResizeObserver(() => win.updateImageSize()); win.imageResize.observe(win.body); }
+      if (win.imageResize) win.imageResize.disconnect();
+      win.imageResize = new ResizeObserver(() => win.updateImageSize());
+      win.imageResize.observe(stage);
     } });
   }
 
@@ -2302,9 +2578,19 @@ const Y2K = (() => {
   // ---- 鸽讯 ----
   function gxAccount(id) { return D.gxAccounts[id]; }
   function gxCanRead(account) { const a = gxAccount(account); return !!(a && test(a.requires) && solved(a.puzzle)); }
-  function openGexun() {
-    const account = S.gxRemember && gxCanRead(S.gxSession) ? S.gxSession : null;
-    return openWin({ key: 'gexun', title: '鸽讯 2005 · 消息管理器', icon: 'pigeon', w: 720, h: 500, live: true, state: { account, c: null, d: null }, render: renderGexun });
+  function openGexun(logId) {
+    const existing = wins.find(win => win.key === 'gexun');
+    if (existing && !logId) { focusWin(existing); return existing; }
+    const log = logId && D.gxLogs.find(entry => entry.id === logId);
+    const owner = log && (log.account || 'xiaochuan');
+    const session = existing?.state.account || (S.gxRemember ? S.gxSession : null);
+    const account = gxCanRead(session) && (!owner || owner === session) ? session : null;
+    const state = { account, c: null, d: null, pick: owner || null, pendingLog: null, filter: '' };
+    if (log && test(gxAccount(owner)?.requires)) {
+      if (account && test(log.requires)) { state.c = log.contact; state.d = log.id; }
+      else state.pendingLog = log.id;
+    }
+    return openWin({ key: 'gexun', title: '鸽讯 2005 · 消息管理器', icon: 'pigeon', w: 720, h: 500, live: true, state, render: renderGexun });
   }
   function gxLogsFor(c, account) {
     if (!gxCanRead(account)) return [];
@@ -2329,7 +2615,7 @@ const Y2K = (() => {
       const msg=h('div',{class:'gx-login-error',role:'status'}),source=h('p',{class:'gx-source'}),hintBox=h('div'),hintButton=h('span');
       const change=()=>{
         st.pick=select.value;pass.value='';msg.textContent='';const a=gxAccount(select.value);
-        source.textContent=a?.source||'本机尚未载入本地账号。收到用户备份后，可在此选择账号并打开消息记录。';
+        source.textContent=a?.source||'本机还没有账号备份。收到备份后，就能在这里选账号、查聊天记录了。';
         hintBox.replaceChildren();hintButton.replaceChildren();
         if(a&&D.puzzles[a.puzzle]){const hints=puzzleHints(a.puzzle,D.puzzles[a.puzzle]);hintBox.append(hints.box);hintButton.append(hints.button);}
       };
@@ -2337,14 +2623,18 @@ const Y2K = (() => {
       const login=()=>{
         const a=gxAccount(select.value);if(!a||!test(a.requires))return;
         if(!(remember.checked&&S.gxRemember&&solved(a.puzzle)&&!pass.value)&&!checkPuzzle(D.puzzles[a.puzzle],pass.value)){
-          msg.textContent='本地资料密码不正确。请检查大小写和输入内容。';pass.select();return;
+          msg.textContent='密码不对。对照一下备份里的线索，再试一次。';pass.select();return;
         }
         st.account=select.value;st.c=null;st.d=null;st.filter='';S.gxRemember=remember.checked;S.gxSession=remember.checked?st.account:null;
-        solvePuzzle(a.puzzle);save('auto');win.refresh(true);
+        solvePuzzle(a.puzzle);
+        const target = st.pendingLog && gxLogsFor(null, st.account).find(log => log.id === st.pendingLog);
+        if (target) { st.c = target.contact; st.d = target.id; }
+        st.pendingLog = null;
+        save('auto');win.refresh(true);
       };
       pass.onkeydown=e=>{if (confirmInput(e)){e.preventDefault();login();}};
       panel.append(h('label',{for:'gx-account',text:'账号'}),select,h('label',{for:'gx-password',text:'本地资料密码'}),pass,
-        h('label',{class:'gx-remember'},remember,h('span',{text:'在这台电脑上记住已验证的账号'})),source,msg,hintBox,
+        h('label',{class:'gx-remember'},remember,h('span',{text:'在这台电脑上记住账号'})),source,msg,hintBox,
         h('div',{class:'row'},hintButton,controlButton({class:'b98',text:'登录',id:'gx-login',disabled:!accounts.length},login),controlButton({class:'b98',text:'取消'},()=>closeWin(win))));
       win.body.append(panel);win.status.append(h('div',{text:'本地资料模式 · 未连接'}));return;
     }
@@ -2368,8 +2658,22 @@ const Y2K = (() => {
       const logs=gxLogsFor(c.id,st.account),dates=h('div',{class:'dates'});
       logs.forEach(l=>dates.append(controlButton({class:'b98'+(st.d===l.id?' down':''),text:l.date+(l.subject?' · '+l.subject:'')+(S.opened[l.id]?'':' •'),'data-gx-log':l.id},()=>{st.d=l.id;win.resetScroll=true;win.refresh(true);})));right.append(dates);
       const log=h('div',{class:'log',tabindex:0}),L=logs.find(x=>x.id===st.d);
-      if(!L)log.append(h('div',{class:'empty98',text:logs.length?'选择日期查看那一天的聊天记录。':'此联系人暂无可读的本地记录。'}));
-      else {opened(L.id,L.onOpen);log.append(h('div',{class:'gx-log-heading',text:L.date+'　与 '+c.nick+'（'+c.number+'）的消息'}));L.lines.forEach(x=>log.append(x.who==='system'?h('div',{class:'gx-system',text:x.time+'　'+x.text}):h('div',{class:'ln '+x.who},h('div',{class:'h',text:(x.who==='me'?account.nick:c.nick)+'　'+(x.time||'')}),h('div',{class:'x',text:fmt(x.text)}))));}
+      if(!L)log.append(h('div',{class:'empty98',text:logs.length?'选择日期查看那一天的聊天记录。':'这份备份里还没有和这个人的聊天记录。'}));
+      else {
+        opened(L.id, L.onOpen);
+        log.append(h('div', { class: 'gx-log-heading', text: L.date + '　与 ' + c.nick + '（' + c.number + '）的消息' }));
+        for (const line of L.lines) {
+          const stamp = [line.date, line.time].filter(Boolean).join(' ');
+          if (line.who === 'system') {
+            log.append(h('div', { class: 'gx-system', text: stamp + '　' + line.text }));
+          } else {
+            const speaker = line.who === 'me' ? account.nick : c.nick;
+            log.append(h('div', { class: 'ln ' + line.who },
+              h('div', { class: 'h', text: speaker + '　' + stamp }),
+              h('div', { class: 'x', text: fmt(line.text) })));
+          }
+        }
+      }
       right.append(log);
     }
     gx.append(left,right);win.body.append(gx);win.status.append(h('div',{text:'消息服务器：未连接'}),h('div',{text:gxLogsFor(null,st.account).length+' 段本地记录'}));
@@ -2381,9 +2685,20 @@ const Y2K = (() => {
     const res=h('div',{class:'in gx-search-results',role:'status'});
     const run=()=>{res.innerHTML='';const q=inp.value.trim();if(!q){res.textContent='请输入查找内容。';return;}
       if(from.value&&to.value&&from.value>to.value){res.textContent='起始日期不能晚于结束日期。';return;}
-      for(const l of gxLogsFor(null,win.state.account)){if((from.value&&l.date<from.value)||(to.value&&l.date>to.value))continue;
-        for(const x of l.lines){if(!x.text.toLowerCase().includes(q.toLowerCase()))continue;const c=D.gxContacts.find(c=>c.id===l.contact);
-          res.append(controlButton({class:'gx-search-result',text:(c?.nick||'')+'　'+l.date+' '+(x.time||'')+'\n'+x.text},()=>{closeModal();win.state.c=l.contact;win.state.d=l.id;win.state.filter='';win.resetScroll=true;win.refresh(true);}));}}
+      for (const record of gxLogsFor(null, win.state.account)) {
+        const contact = D.gxContacts.find(c => c.id === record.contact);
+        for (const line of record.lines) {
+          const day = line.date || record.date;
+          if ((from.value && day < from.value) || (to.value && day > to.value)) continue;
+          if (!line.text.toLowerCase().includes(q.toLowerCase())) continue;
+          const text = (contact?.nick || '') + '　' + day + ' ' + (line.time || '') + '\n' + line.text;
+          res.append(controlButton({ class: 'gx-search-result', text }, () => {
+            closeModal();
+            Object.assign(win.state, { c: record.contact, d: record.id, filter: '' });
+            win.resetScroll = true; win.refresh(true);
+          }));
+        }
+      }
       if(!res.children.length)res.textContent='没有找到。';
     };
     inp.onkeydown=e=>{if (confirmInput(e))run();};
@@ -2482,16 +2797,17 @@ const Y2K = (() => {
         const ts = vt.filter(t => t.board === b.id); const last = ts.slice().sort((a,b)=>b.date.localeCompare(a.date))[0];
         rows += `<tr><td><a href="/board.asp?id=${b.id}"><b>${esc(b.name)}</b></a><br><span style="color:#666">${esc(b.desc || '')}</span></td><td>${uLink(b.mod)}</td><td style="text-align:center">${ts.length}</td><td>${last ? `<a href="/thread.asp?id=${last.id}">${esc(strip(last.title)).slice(0, 18)}</a><br><span style="color:#888">${esc(last.date)}</span>` : '-'}</td></tr>`;
       });
-      const latest = vt.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8).map(t => `<li><a href="/thread.asp?id=${t.id}">${esc(strip(t.title))}</a> <span style="color:#888">— ${uLink(t.author)} ${esc(t.date)}</span></li>`).join('');
-      const notice=(!bbsArchiveReady()&&D.bbsMeta.publicHomeNotice)||D.bbsMeta.homeNotice||'';
-      const batch=(D.bbsMeta.recoveryBatches||[]).filter(b=>test(b.requires)).at(-1);
-      const added=batch?`<div class="bbs-import"><b>${esc(batch.label)}</b><ul>${batch.ids.map(id=>vt.find(t=>t.id===id)).filter(Boolean).map(t=>`<li><a href="/thread.asp?id=${t.id}">${esc(strip(t.title))}</a></li>`).join('')}</ul></div>`:'';
-      return { title: D.bbsMeta.name || _t('少年宫小站'), html: topBar('') + `<div class="notice">${fmt(notice)}</div><div class="wrap">${added}<table class="t"><tr><th>${_t('版面')}</th><th>${_t('版主')}</th><th>${_t('主题数')}</th><th>${_t('最新主题')}</th></tr>${rows}</table><p style="color:#666">${_t('注册用户')} ${D.users.filter(x => test(x.requires)).length} ${_t('人　|　帖子')} ${vt.length} ${_t('篇　|　本地网页备份')}</p><h2>${_t('最新帖子')}</h2><ul style="padding-left:18px;margin:0">${latest}</ul></div>`, source: '' };
+      const notice = (!bbsArchiveReady() && D.bbsMeta.publicHomeNotice) || D.bbsMeta.homeNotice || '';
+      const batch = (D.bbsMeta.recoveryBatches || []).filter(pack => test(pack.requires)).at(-1);
+      const recent = batch ? vt.filter(thread => batch.ids.includes(thread.id)) : vt.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8);
+      const latest = recent.sort((a, b) => b.date.localeCompare(a.date)).map(t => `<li><a href="/thread.asp?id=${t.id}">${esc(strip(t.title))}</a> <span style="color:#888">— ${uLink(t.author)} ${esc(t.date)}</span></li>`).join('');
+      return { title: D.bbsMeta.name || _t('少年宫小站'), html: topBar('') + `<div class="notice">${fmt(notice)}</div><div class="wrap"><table class="t"><tr><th>${_t('版面')}</th><th>${_t('版主')}</th><th>${_t('主题数')}</th><th>${_t('最新主题')}</th></tr>${rows}</table><p style="color:#666">${_t('注册用户')} ${D.users.filter(x => test(x.requires)).length} ${_t('人　|　帖子')} ${vt.length} ${_t('篇　|　本地网页备份')}</p><h2>${batch ? _t('本批恢复的帖子') : _t('最新帖子')}</h2><ul class="bbs-latest" style="padding-left:18px;margin:0">${latest}</ul></div>`, source: '' };
     }
     if (path === '/board.asp') {
       const b = D.bbsBoards.find(x => x.id === P.id && test(x.requires));
       if (!b) return errPage(_t('版面不存在。'));
       const ts = visibleThreads().filter(t => t.board === b.id).sort((x, y) => (y.sticky ? 1 : 0) - (x.sticky ? 1 : 0) || y.date.localeCompare(x.date));
+
       let rows = ts.map(t => `<tr><td>${t.sticky ? _t('<b style="color:#c00">[置顶]</b> ') : ''}<a href="/thread.asp?id=${t.id}">${esc(strip(t.title))}</a>${S.opened['t' + t.id] ? '' : ' <span style="color:#c00">new</span>'}</td><td>${uLink(t.author)}</td><td style="text-align:center">${(t.posts || []).length - 1}</td><td style="text-align:center">${t.views || (37 + (t.id * 7) % 300)}</td><td>${esc(t.date)}</td></tr>`).join('');
       if (!rows) rows = _t('<tr><td colspan="5">本版暂无已恢复的帖子。</td></tr>');
       return { title: b.name, html: topBar(`<a href="/">${_t('首页')}</a> » ${esc(b.name)}　<span style="color:#666">${_t('版主：')}${uLink(b.mod)}</span>`) + `<div class="wrap"><table class="t"><tr><th>${_t('主题')}</th><th>${_t('作者')}</th><th>${_t('回复')}</th><th>${_t('人气')}</th><th>${_t('发表时间')}</th></tr>${rows}</table></div>`, source: b.source || '' };
@@ -2500,6 +2816,9 @@ const Y2K = (() => {
       const id = parseInt(P.id, 10);
       const t = THREAD[id];
       if (!t || !test(t.requires) || !snapOK(t)) return { title: _t('帖子不存在'), html: topBar(`<a href="/">${_t('首页')}</a>`) + `<div class="err"><h1>${_t('错误：帖子不存在')}</h1><p>${_t('编号为')} ${esc(P.id || '')} ${_t('的帖子不存在，或者数据尚未恢复。')}</p><p style="color:#888">WTBBS Error 1032</p></div>` };
+      if (isDel(t) && D.bbsMeta.adminPuzzle && !solved(D.bbsMeta.adminPuzzle)) {
+        return { title: _t('站务回收站'), html: topBar('') + '<div class="err">请先<a href="/admin/">登录站务管理</a>查看回收站里的原帖。</div>' };
+      }
       if (t.lock && !solved(t.lock)) return lockPage(t.lock, win, t.title);
       opened('t' + t.id, t.onOpen);
       const b = D.bbsBoards.find(x => x.id === t.board);
@@ -2507,13 +2826,30 @@ const Y2K = (() => {
         const au = USER[p.author] || { nick: p.author };
         return `<div class="post"><div class="who"><b>${uLink(p.author)}</b><br><span style="color:#666">${esc(p.author)}</span>${au.title ? `<br><span class="tt">${esc(au.title)}</span>` : ''}<br>${_t('帖子：')}${au.posts || 0}<br>${_t('注册：')}${esc((au.reg || '').slice(0, 10))}</div><div class="body"><div class="meta"><span>${i === 0 ? _t('<b>楼主</b>') : i + _t(' 楼')}　${_t('发表于')} ${esc(p.date || t.date)}</span>${i === 0 && t.ip ? `<span>IP：${esc(t.ip)}</span>` : ''}</div><div class="content">${fmt(p.html)}</div>${au.sig ? `<div class="sig">${esc(au.sig)}</div>` : ''}</div></div>`;
       }).join('');
-      return { title: t.title, html: topBar(`<a href="/">${_t('首页')}</a> » <a href="/board.asp?id=${t.board}">${esc(b ? b.name : t.board)}</a> ${_t('» 帖子 #')}${t.id}`) + `<div class="wrap">${isDel(t) ? _t('<div class="delbar">【该帖已被站务删除，仅管理员可见】</div>') : ''}<h2>${esc(strip(t.title))}</h2>${posts}</div>`, source: t.source || '', srcFlag: 'source_t' + t.id, onSource: t.onSource };
+      return { title: t.title, html: topBar(`<a href="/">${_t('首页')}</a> » <a href="/board.asp?id=${t.board}">${esc(b ? b.name : t.board)}</a> ${_t('» 帖子 #')}${t.id}`) + `<div class="wrap">${isDel(t) ? ('<div class="delbar">' + _t('【该帖已被站务删除，仅管理员可见】') + (t.deletedAt ? '　删除记录：' + esc(t.deletedAt) : '') + '</div>') : ''}<h2>${esc(strip(t.title))}</h2>${posts}</div>`, source: t.source || '', srcFlag: 'source_t' + t.id, onSource: t.onSource };
     }
     if (path === '/user.asp') {
       const us = uName(P.id);
       if (!us) return errPage(_t('用户不存在。'));
-      const ts = visibleThreads().filter(t => t.author === us.id);
+      const publicThreads = visibleThreads();
+      const ts = publicThreads.filter(t => t.author === us.id).sort((a, b) => b.date.localeCompare(a.date));
+
       const node = h('div', { html: topBar(`<a href="/">${_t('首页')}</a> » <a href="/users.asp">${_t('成员列表')}</a> » ${esc(us.nick)}`) + `<div class="wrap"><table class="t"><tr><th colspan="2">${_t('用户资料：')}${esc(us.nick)}（${esc(us.id)}）</th></tr><tr><td width="90">${_t('昵称')}</td><td>${esc(us.nick)}</td></tr><tr><td>${_t('性别')}</td><td>${esc(us.gender || '-')}</td></tr><tr><td>${_t('头衔')}</td><td>${esc(us.title || '-')}</td></tr><tr><td>${_t('注册时间')}</td><td>${esc(us.reg || '')}</td></tr><tr><td>${_t('最后登录')}</td><td>${esc(us.lastLogin || '')}</td></tr><tr><td>${_t('发帖数')}</td><td>${us.posts || 0}</td></tr><tr><td>${_t('个人介绍')}</td><td>${esc(us.intro || '')}</td></tr><tr><td>${_t('签名档')}</td><td>${esc(us.sig || '')}</td></tr></table><h2>${_t('TA 的帖子（已恢复')} ${ts.length} ${_t('篇）')}</h2><ul style="padding-left:18px;margin:0">${ts.map(t => `<li><a href="/thread.asp?id=${t.id}">${esc(strip(t.title))}</a> <span style="color:#888">${esc(t.date)}</span></li>`).join('') || _t('<li>无</li>')}</ul></div>` });
+      const replies = [];
+      for (const thread of publicThreads) {
+        if (thread.author === us.id || (thread.lock && !solved(thread.lock))) continue;
+        const floor = thread.posts.findLastIndex(post => post.author === us.id);
+        if (floor > 0) replies.push({ thread, floor, date: thread.posts[floor].date });
+      }
+      if (replies.length) {
+        replies.sort((a, b) => b.date.localeCompare(a.date));
+        const list = h('ul', { class: 'bbs-replies', style: { paddingLeft: '18px', margin: '0' } });
+        for (const { thread, floor, date } of replies) {
+          list.append(h('li', {}, h('a', { href: '/thread.asp?id=' + thread.id, text: strip(thread.title) }),
+            h('span', { text: '　' + floor + ' 楼 · ' + date, style: { color: '#666' } })));
+        }
+        node.querySelector('.wrap').append(h('h2', { text: '回过的主题（已恢复 ' + replies.length + ' 篇）' }), list);
+      }
       const extras = D.userExtras.filter(x => x.user === us.id && test(x.requires));
       if (extras.length) {
         const ux = h('div', { class: 'ux' }); const out = h('div');
@@ -2541,6 +2877,7 @@ const Y2K = (() => {
           const p = (t.posts || []).find(x => strip(x.html).includes(q));
           if (hitTitle || p) res.push({ t, snip: p ? strip(p.html) : strip(t.title) });
         });
+
         const hl = (s) => esc(s).split(esc(q)).join(`<span class="hl">${esc(q)}</span>`);
         wrap.append(h('div', { html: `<p>${_t('找到')} ${res.length} ${_t('个结果：')}</p>` + res.map(({ t, snip }) => { const i = Math.max(0, snip.indexOf(q) - 20); return `<p><a href="/thread.asp?id=${t.id}"><b>${hl(strip(t.title))}</b></a> <span style="color:#888">${esc(t.date)} · ${esc(USER[t.author] ? USER[t.author].nick : t.author)}</span><br>…${hl(snip.slice(i, i + 70))}…</p>`; }).join('') }));
       }
@@ -2579,6 +2916,7 @@ const Y2K = (() => {
       const fu = (P.user || '').trim(), fd = (P.date || '').trim(), order = P.order === 'asc' ? 'asc' : 'desc';
       let rows = all.filter(l => (!fu || l.user.toLowerCase() === fu.toLowerCase()) && (!fd || l.time.startsWith(fd)));
       rows.sort((a, b) => order === 'asc' ? a.time.localeCompare(b.time) : b.time.localeCompare(a.time));
+      for (const row of rows.slice(0, 400)) if (row.receipt) opened(row.receipt);
       const node = h('div', { html: head });
       const wrap = h('div', { class: 'wrap' });
       const iu = h('input', { id: 'lgu', value: fu, placeholder: _t('用户 ID'), style: { width: '100px', font: 'inherit' } });
@@ -2617,7 +2955,7 @@ const Y2K = (() => {
   // ============================================================
   function refreshWins(force) { wins.forEach(w => { if (w.o.live || force) w.refresh(); }); }
   function renderAll() {
-    if (!S) return;
+    if (!S || awaitingPuzzleFeedback()) return;
     const brand = $('.brand');
     if (brand) brand.textContent = playerText(_t('老K工作室 · 读盘机'));
     renderPhone();
@@ -2722,9 +3060,13 @@ const Y2K = (() => {
   }
   function renderCompare(win) {
     const st = win.state, docs = cmpDocs();
+    const fileLabel = file => {
+      const label = cmpLabel(file);
+      return file.evidenceOwner ? nameOf(parentOf(file.path)) + ' · ' + label : label;
+    };
     const pick = (key) => {
       const s = h('select', { class: 'f98 cmp-sel', id: 'cmp_' + key, 'aria-label': key === 'l' ? _t('左侧文件') : _t('右侧文件') }, h('option', { value: '', text: _t('— 选择一份已读过的资料 —') }));
-      docs.forEach(f => s.append(h('option', { value: f.id, text: cmpLabel(f), selected: st[key] === f.id })));
+      docs.forEach(f => s.append(h('option', { value: f.id, text: fileLabel(f), selected: st[key] === f.id })));
       s.onchange = () => { st[key] = s.value; st.sel = null; st.msg = ''; win.refresh(true); };
       return s;
     };
@@ -2746,17 +3088,17 @@ const Y2K = (() => {
             const want = [].concat(p.mark);
             markInteraction();
             if (want.some(w => text.includes(w))) { st.msg = p.solvedText || _t('就是这一处。'); solvePuzzle(pid); st.puzzle = null; }
-            else { sfx('err'); st.msg = (p.near && Object.entries(p.near).find(([k]) => text.includes(k)) || [0, _t('所选差异与待核对事项不符。')])[1]; }
+            else { sfx('err'); st.msg = (p.near && Object.entries(p.near).find(([k]) => text.includes(k)) || [0, _t('这处改动跟要查的事无关，再看看别的行。')])[1]; }
             win.refresh(true);
           } })),
         st.msg ? h('div', { class: 'cmp-msg', html: fmt(st.msg) }) : null);
       win.top.append(ban);
     } else if (st.msg) win.top.append(h('div', { class: 'cmp-msg', html: fmt(st.msg) }));
-    if (!L || !R) { body.append(h('div', { class: 'empty98', text: _t('尚未载入比较文件。') })); win.status.append(h('div', { text: `${docs.length} ${_t('份可比较的资料')}` })); return; }
+    if (!L || !R) { body.append(h('div', { class: 'empty98', text: _t('在上方选好两份资料，这里就会显示它们的差别。') })); win.status.append(h('div', { text: `${docs.length} ${_t('份可比较的资料')}` })); return; }
     const rows = diffLines(cmpText(L), cmpText(R), L.sourceText, R.sourceText);
     const hunks = rows.filter(x => !x.eq);
     const tb = h('table', { class: 'cmp' });
-    tb.append(h('tr', {}, h('th', { text: cmpLabel(L) }), h('th', { text: cmpLabel(R) })));
+    tb.append(h('tr', {}, h('th', { text: fileLabel(L) }), h('th', { text: fileLabel(R) })));
     rows.forEach(x => {
       if (x.eq) { tb.append(h('tr', {}, h('td', { text: x.l }), h('td', { text: x.r }))); return; }
       const n = Math.max(x.l.length, x.r.length), cls = x.l.length && x.r.length ? 'chg' : x.l.length ? 'del' : 'add';
@@ -2910,8 +3252,8 @@ const Y2K = (() => {
   function renderMap(win) {
     const M = D.map, st = win.state, ver = mapVer(), V = M.versions[ver];
     win.top.append(h('div', { class: 'map-head' }, h('b', { text: V.title }), h('span', { text: V.sub || '' }),
-      h('button', { class: 'b98', type: 'button', text: _t('切换还原点…'), onclick: () => openRestore() })));
-    const P = st.puzzle && D.puzzles[st.puzzle] && !solved(st.puzzle) ? [st.puzzle, D.puzzles[st.puzzle]] : mapPuzzles()[0];
+      snapList().filter(s => test(s.requires)).length > 1 ? h('button', { class: 'b98', type: 'button', text: _t('切换还原点…'), onclick: () => openRestore() }) : null));
+    const P = st.puzzle && D.puzzles[st.puzzle] && test(D.puzzles[st.puzzle].requires) && !solved(st.puzzle) ? [st.puzzle, D.puzzles[st.puzzle]] : mapPuzzles()[0];
     const sp = st.sel && M.spots[st.sel] && mapShow(M.spots[st.sel], ver) ? M.spots[st.sel] : null;
     if (P) {
       const [pid, p] = P;
@@ -2973,13 +3315,21 @@ const Y2K = (() => {
   // 推理板依据：b.srcPool 里玩家读过的原件会作为「原件」词条出现，空格写成 'src:<文件id>'
   function boardWords(b) {
     const w = Object.assign({}, b.words);
-    (b.srcPool || []).forEach(id => { if (S.flags['seen_' + id]) w['src:' + id] = '《' + hhSourceLabel(id).replace(/　\[.*\]$/, '') + '》'; });
+    (b.srcPool || []).forEach(id => {
+      if (!S.flags['seen_' + id]) return;
+      const file = D.files.find(f => f.id === id);
+      const title = '《' + hhSourceLabel(id).replace(/　\[.*\]$/, '').replaceAll('《', '〈').replaceAll('》', '〉') + '》';
+      w['src:' + id] = b.sourceLabels?.[id] || (file && file.evidenceOwner ? file.evidenceOwner + '的' + title : title);
+    });
     return w;
   }
 
   // ---- 录像：仪式录像带与老K自己的素材（逐帧看画面描述和口播）----
   const clipsOpen = () => !!(D.footage && test(D.footage.requires));
-  const clipList = () => ((D.footage || {}).clips || []).filter(c => test(c.requires));
+  const clipList = () => ((D.footage || {}).clips || [])
+    .filter(c => test(c.requires))
+    .sort((a, b) => b.date.localeCompare(a.date)
+      || (b.frames?.[0]?.t || '').localeCompare(a.frames?.[0]?.t || ''));
   const newClips = () => clipsOpen() ? clipList().filter(c => !S.flags['seen_' + c.id]).length : 0;
   const activePick = (kind, key, owner) => {
     const ok = ([id, p]) => !!p && p.kind === kind && !solved(id) && test(p.requires) && (kind !== 'frame' || p.clip === owner);
@@ -2992,7 +3342,7 @@ const Y2K = (() => {
     body.append(h('div', { class: 'ph-card pick-task' },
       h('div', { class: 'k', text: _t('待核对') }), h('b', { text: p.title }), h('div', { html: fmt(p.prompt || '') }), hints.box,
       h('div', { class: 'row' }, hints.button,
-        h('button', { class: 'ph-btn sm pri', text: selLabel ? _t('提交：') + selLabel : _t('先选中一条'), disabled: !selLabel, onclick: onSubmit })),
+        h('button', { class: 'ph-btn sm pri', text: selLabel ? _t('提交：') + selLabel : _t('先选一帧画面'), disabled: !selLabel, onclick: onSubmit })),
       ui[msgKey] ? h('div', { class: 'pick-msg', html: fmt(ui[msgKey]) }) : null));
   }
   function renderClips(title, body) {
@@ -3001,8 +3351,10 @@ const Y2K = (() => {
       title(_t('录像'), (D.footage.sub || ''));
       if (D.footage.intro) body.append(h('div', { class: 'ph-card done', html: fmt(D.footage.intro) }));
       clipList().forEach(c => {
+        const frameTime = c.frames?.[0]?.t?.slice(0, 5);
+        const recorded = [c.date, frameTime].filter(Boolean).join(' ');
         const b = h('button', { class: 'ph-card clipcard' + (S.flags['seen_' + c.id] ? '' : ' new'), type: 'button', onclick: () => { ui.clip = c.id; ui.frameSel = null; ui.frameMsg = ''; renderPhone(); } },
-          h('div', { class: 'k', text: `${c.date}　${c.dur || ''}` }), h('b', { text: c.title }), c.sub ? h('div', { class: 'faded', text: c.sub }) : null);
+          h('div', { class: 'k', text: c.dur ? `${recorded}　${_t('时长')} ${c.dur}` : recorded }), h('b', { text: c.title }), c.sub ? h('div', { class: 'faded', text: c.sub }) : null);
         body.append(b);
       });
       return;
@@ -3016,7 +3368,7 @@ const Y2K = (() => {
       pickBanner(body, pz, sel ? sel.t : '', () => {
         const [pid, p] = pz; markInteraction();
         if ([].concat(p.frame).includes(sel.t)) { ui.frameMsg = p.solvedText || _t('就是这一帧。'); ui.framePuzzle = null; solvePuzzle(pid); }
-        else { sfx('err'); ui.frameMsg = (p.near || {})[sel.t] || _t('画面与待核对事项不符。'); }
+        else { sfx('err'); ui.frameMsg = (p.near || {})[sel.t] || _t('再看看别的画面。这一帧里找不到要核对的细节。'); }
         renderPhone();
       }, 'frameMsg');
     } else if (ui.frameMsg) body.append(h('div', { class: 'pick-msg', html: fmt(ui.frameMsg) }));
@@ -3136,12 +3488,14 @@ const Y2K = (() => {
       });
     });
     S = fresh(_t('老K'));
-    showTitle();
+    const reload = performance.getEntriesByType('navigation')[0]?.type === 'reload';
+    const resume = reload && sessionScreen() === 'game' && location.hash !== '#leaderboard' && readSave('auto');
+    if (resume) loadState(resume); else showTitle();
     if (location.hash === '#leaderboard') $('#title .leaderboard-entry')?.click();
     window.Y2KStats?.start();
   }
 
   // 测试与调试用（浏览器控制台）
-  const debug = { get state() { return S; }, get pre() { return preEndSnap; }, D, test, act, setFlag: (f) => { setFlag(f); dirty(); }, solve: (id) => { solvePuzzle(id); dirty(); }, board: (id) => { setFlag('board_' + id); act(D.boards[id].onSolve); dirty(); }, openBoard, openFile: (id) => openFile(D.files.find(f => f.id === id)), openIE, ieGo: (u) => { const w = wins.find(x => x.key === 'ie'); w ? ieGo(w, u) : openIE(u); }, choose, flush: () => { clearTimers(); running = {}; typing = {}; }, fast: (on) => { FAST = on !== false; }, update: () => update(), ui, checkPuzzle, norm, showProps, closeModal, closeAllWins, openGexun, openApp, renderPhone, wins: () => wins, closeOverlay, showCards };
+  const debug = { get state() { return S; }, get pre() { return preEndSnap; }, D, test, act, setFlag: (f) => { setFlag(f); dirty(); }, solve: (id) => { solvePuzzle(id); dirty(); }, board: (id) => { if (!canOpenBoard(id)) return; setFlag('board_' + id); act(D.boards[id].onSolve); dirty(); }, openBoard, openFile: (id) => openFile(D.files.find(f => f.id === id)), openIE, ieGo: (u) => { const w = wins.find(x => x.key === 'ie'); w ? ieGo(w, u) : openIE(u); }, choose, flush: () => { clearTimers(); running = {}; typing = {}; }, fast: (on) => { FAST = on !== false; }, update: () => update(), ui, checkPuzzle, norm, showProps, closeModal, closeAllWins, openGexun, openApp, renderPhone, wins: () => wins, closeOverlay, showCards };
   return { add, boot, lang, patch, debug };
 })();
