@@ -1,4 +1,4 @@
-<!doctype html><html lang="zh-CN"><head><meta name="qnc2-release" content="261eaaa848a44604fc4d"><meta name="qnc2-pages-board" content="https://bxxaqioxrayhymydyqvy.supabase.co/functions/v1/qnc2-trial-board"><meta name="qnc2-board-anon-key" content="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4eGFxaW94cmF5aHlteWR5cXZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMzNDgzNDgsImV4cCI6MjEwODkyNDM0OH0.8kf5tl3KfKvFvopSKJA8OG4RMtvgZYzT6eboZ-0_sV0"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#121316"><meta name="description" content="千年虫 2：未寄出的明天。五个孩子把给四十岁自己的信封进铁盒。失踪十七年的人带走的那只铁盒，被匿名寄到了老K的工作室。"><title>千年虫 2：未寄出的明天（试玩版）</title><style>/* 布局：左边是一台米黄色显示器（里面是 Win98），右边是 2026 年的手机。单一视觉世界，不跟随系统深浅色。 */
+<!doctype html><html lang="zh-CN"><head><meta name="qnc2-release" content="2ff8b79e391be4c4de1f"><meta name="qnc2-pages-board" content="https://bxxaqioxrayhymydyqvy.supabase.co/functions/v1/qnc2-trial-board"><meta name="qnc2-board-anon-key" content="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4eGFxaW94cmF5aHlteWR5cXZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMzNDgzNDgsImV4cCI6MjEwODkyNDM0OH0.8kf5tl3KfKvFvopSKJA8OG4RMtvgZYzT6eboZ-0_sV0"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#121316"><meta name="description" content="千年虫 2：未寄出的明天。五个孩子把给四十岁自己的信封进铁盒。失踪十七年的人带走的那只铁盒，被匿名寄到了老K的工作室。"><title>千年虫 2：未寄出的明天（试玩版）</title><style>/* 布局：左边是一台米黄色显示器（里面是 Win98），右边是 2026 年的手机。单一视觉世界，不跟随系统深浅色。 */
 :root {
   --room: #121316;
   --bezel: #d9d3c3;
@@ -1914,121 +1914,85 @@ ul.bl-list{margin:0 0 10px;padding-left:1.4em;color:#aaa}
 .feedback-online{display:inline-flex;align-items:center;text-decoration:none}
 @media(max-width:700px){.feedback-layout{grid-template-columns:minmax(0,1fr);gap:20px}.feedback-entry-head time{width:100%;margin-left:0}.feedback-form textarea{min-height:110px}.feedback-summary{font-size:14px;line-height:1.8}}
 </style></head><body><noscript>请启用JavaScript以运行游戏。</noscript><script>window.QNC2StandaloneTrial = true;window.Y2K_LANGS=['zh'];window.Y2K_STATS_CONFIG={"endpoint":"https://qiannianchong-stats.chenhao2003.chatgpt.site/api/stats2","allowedOrigins":[],"game":"2-sixth-disk","leaderboardEndpoint":"https://qiannianchong-stats.chenhao2003.chatgpt.site/api/leaderboard?game=2-sixth-disk","showTitleStats":false};
-'use strict';
-// 只传递随机标识与游玩状态；与剧情、昵称和存档无关。
-window.Y2KStats = (() => {
-  const words = {
-    zh: { visits: '累计访问', online: '当前在线', loading: '正在读取统计', error: '统计暂时不可用', offline: '离线模式', preview: '本地预览不计入统计', retry: '重新连接' },
-    en: { visits: 'Total visits', online: 'Online now', loading: 'Loading statistics', error: 'Statistics temporarily unavailable', offline: 'Offline mode', preview: 'Local previews are not counted', retry: 'Reconnect' },
-    ja: { visits: '累計アクセス', online: '現在オンライン', loading: '統計を読み込み中', error: '統計を取得できません', offline: 'オフラインモード', preview: 'ローカルプレビューは集計対象外です', retry: '再接続' },
-  };
-  const showOnTitle = window.Y2K_STATS_CONFIG?.showTitleStats === true;
-  let started = false, playing = false, pageId, sessionId, visitorId, registered = false;
-  let flight = false, queued = false, seq = 0, lastApplied = 0, online = null, visits = null, mode = 'loading';
-  let endpoint = '', enabled = false, departed = false;
-  let retryTimer = 0, retryAttempt = 0;
-  const panels = new Map();
-  const uuid = () => {
-    if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-    // Older Safari/WebViews support getRandomValues but not randomUUID.
-    const bytes = crypto.getRandomValues(new Uint8Array(16));
-    bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
-    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-  };
-  const validId = value => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value || '');
-  function beginPage(reload) {
-    pageId = uuid(); sessionId = uuid(); seq = 0; lastApplied = 0; registered = false;
+// Standalone trial presence. Both the title screen and the game share one heartbeat.
+window.QNC2TrialOnline = (() => {
+  const storageKey = 'qnc2_trial_online_visitor';
+  const valid = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
+  const pages = document.querySelector('meta[name="qnc2-pages-board"]')?.content;
+  const key = document.querySelector('meta[name="qnc2-board-anon-key"]')?.content;
+  const endpoint = pages ? new URL('qnc2-trial-online', pages).href : '/api/online';
+  let browserId, label, pending = false, started = false, timer;
+  let display = '正在连接…';
+
+  function visitor() {
     try {
-      const previous = sessionStorage.getItem('y2k2_stats_visit');
-      if (reload && validId(previous)) pageId = previous;
-      sessionStorage.setItem('y2k2_stats_visit', pageId);
-    } catch (_) {}
-  }
-  function paint() {
-    for (const [el, lang] of panels) {
-      if (!el.isConnected) { panels.delete(el); continue; }
-      const w = words[lang] || words.zh;
-      const format = value => new Intl.NumberFormat(lang === 'zh' ? 'zh-CN' : lang).format(value);
-      const ready = mode === 'ready';
-      el.querySelector('[data-stat="visits"]').textContent = ready ? format(visits) : '—';
-      el.querySelector('[data-stat="online"]').textContent = ready ? format(online) : '—';
-      el.querySelector('.stats-state').textContent = ready ? '' : w[mode];
-      el.querySelector('.stats-retry').hidden = mode !== 'error' || !enabled;
-      el.dataset.state = mode;
+      const saved = localStorage.getItem(storageKey);
+      if (valid.test(saved)) return saved;
+    } catch {}
+    if (!browserId) {
+      // getRandomValues is also available over plain HTTP on a local network.
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      bytes[6] = (bytes[6] & 15) | 64;
+      bytes[8] = (bytes[8] & 63) | 128;
+      const hex = Array.from(bytes, n => n.toString(16).padStart(2, '0')).join('');
+      browserId = [hex.slice(0,8), hex.slice(8,12), hex.slice(12,16), hex.slice(16,20), hex.slice(20)].join('-');
     }
+    try { localStorage.setItem(storageKey, browserId); } catch {}
+    return browserId;
   }
-  function mount(lang) {
-    const w = words[lang] || words.zh, el = document.createElement('div');
-    el.className = 'site-stats'; el.setAttribute('role', 'group');
-    for (const key of ['online', 'visits']) {
-      const item = document.createElement('span'), value = document.createElement('strong');
-      item.className = 'stat-item'; value.dataset.stat = key; value.textContent = '—';
-      item.append(w[key], value); el.append(item);
-    }
-    const state = document.createElement('span'); state.className = 'stats-state'; state.setAttribute('role', 'status'); el.append(state);
-    const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'stats-retry'; retry.hidden = true;
-    retry.textContent = w.retry;
-    retry.onclick = () => { retryAttempt = 0; mode = 'loading'; paint(); void send(); }; el.append(retry);
-    panels.set(el, lang); queueMicrotask(paint); return el;
+  function mount() {
+    if (location.protocol === 'file:') return null;
+    const group = document.createElement('div'), item = document.createElement('span');
+    group.className = 'site-stats';
+    item.className = 'stat-item';
+    group.setAttribute('role', 'status');
+    label = document.createElement('strong');
+    label.textContent = display;
+    item.append('当前在线', label);
+    group.append(item);
+    return group;
   }
-  function active() { return playing && document.visibilityState === 'visible'; }
-  function payload(event) { return { event, pageId, sessionId, visitorId, seq: ++seq, playing: event === 'leave' ? false : active() }; }
-  function leave() {
-    if (!enabled) return;
-    clearTimeout(retryTimer); retryTimer = 0;
-    const body = JSON.stringify(payload('leave'));
-    // 递增序号避免迟到的心跳把已离开的玩家重新记为在线。
-    fetch(endpoint, { method: 'POST', body, headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, keepalive: true, credentials: 'omit' }).catch(() => {
-      try { navigator.sendBeacon?.(endpoint, new Blob([body], { type: 'text/plain;charset=UTF-8' })); } catch (_) {}
-    });
-  }
-  async function send() {
-    if (!enabled || departed) return;
-    if (flight) { queued = true; return; }
-    clearTimeout(retryTimer); retryTimer = 0;
-    flight = true;
-    const message = payload(registered ? 'heartbeat' : 'visit'), controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+  async function heartbeat() {
+    if (pending || document.hidden) return;
+    pending = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     try {
-      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(message), credentials: 'omit', cache: 'no-store', signal: controller.signal });
-      if (!response.ok) throw new Error('stats unavailable');
-      const result = await response.json();
-      if (!Number.isSafeInteger(result.online) || result.online < 0 || (showOnTitle && (!Number.isSafeInteger(result.visits) || result.visits < 0))) throw new Error('invalid statistics');
-      if (message.sessionId !== sessionId) return;
-      if (message.event === 'visit') registered = true;
-      retryAttempt = 0;
-      if (message.seq >= lastApplied && document.visibilityState === 'visible') { lastApplied = message.seq; online = result.online; visits = result.visits; mode = 'ready'; paint(); }
-    } catch (_) {
-      if (departed || message.sessionId !== sessionId) return;
-      mode = 'error'; paint();
-      if (retryAttempt < 3) retryTimer = setTimeout(() => { retryTimer = 0; void send(); }, [1500, 4000, 10000][retryAttempt++]);
+      const headers = {'x-trial-visitor': visitor()};
+      if (key && pages) {
+        headers.apikey = key;
+        headers.Authorization = 'Bearer ' + key;
+      }
+      const res = await fetch(endpoint, {method:'POST', headers, cache:'no-store', credentials:'omit', signal:controller.signal});
+      if (!res.ok) throw Error('presence unavailable');
+      const {online} = await res.json();
+      if (!Number.isSafeInteger(online) || online < 0) throw Error('invalid count');
+      display = online.toLocaleString('zh-CN') + ' 人';
+    } catch {
+      display = '暂时无法获取';
+    } finally {
+      clearTimeout(timeout);
+      pending = false;
+      if (label) label.textContent = display;
     }
-    finally { clearTimeout(timeout); flight = false; if (queued) { queued = false; void send(); } }
   }
-  function setPlaying(value) { const changed = playing !== value; playing = value; if (started && changed) void send(); }
+  function resume() {
+    clearInterval(timer);
+    if (!document.hidden) {
+      void heartbeat();
+      timer = setInterval(heartbeat, 30000);
+    }
+  }
   function start() {
-    if (started) return; started = true;
-    const config = window.Y2K_STATS_CONFIG || {};
-    if (location.protocol === 'file:') { mode = 'offline'; paint(); return; }
-    if (!(config.allowedOrigins || []).includes(location.origin)) { mode = 'preview'; paint(); return; }
-    try {
-      const url = new URL(config.endpoint); if (url.protocol !== 'https:') throw new Error('HTTPS required');
-      endpoint = url.href; beginPage(performance.getEntriesByType('navigation')[0]?.type === 'reload');
-      try {
-        visitorId = localStorage.getItem('y2k2_stats_visitor');
-        if (!validId(visitorId)) { visitorId = uuid(); localStorage.setItem('y2k2_stats_visitor', visitorId); }
-      } catch (_) { visitorId = uuid(); }
-      enabled = true;
-    } catch (_) { mode = 'error'; paint(); return; }
-    // 后台仍属于同一次访问；只有离开页面才结束这个标签页。
-    document.addEventListener('visibilitychange', () => void send());
-    window.addEventListener('pagehide', () => { departed = true; leave(); });
-    window.addEventListener('pageshow', e => { if (e.persisted) { departed = false; beginPage(false); void send(); } });
-    window.addEventListener('online', () => void send());
-    setInterval(() => void send(), 30000); void send();
+    if (started || location.protocol === 'file:') return;
+    started = true;
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('pagehide', () => clearInterval(timer));
+    window.addEventListener('pageshow', resume);
+    window.addEventListener('online', resume);
+    resume();
   }
-  return { mount, setPlaying, start, showOnTitle };
+  return {mount, start};
 })();
 
 // Anonymous results are separate from story saves; only completed runs are submitted.
@@ -5132,7 +5096,7 @@ const Y2K = (() => {
         window.Y2KLeaderboard.mount(titlePanel(panel, _t('排行榜'), event.currentTarget), LANG, !!meta().endings?.H);
       }));
     }
-    tl.append(h('div', { class: 'title-topbar' }, actions, langs), h('div', { class: 'title-content' }, clk, h('h1', { html: _t('千年<span>虫</span> 2') }), h('div', { class: 'sub', text: D.trialLimit?.standalone ? '未寄出的明天 · 试玩版（序章至第三章）' : _t('未寄出的明天 · 梧城少年宫 · 1999—2009') }), menu, panel, stats?.showOnTitle ? stats.mount(LANG) : null,
+    tl.append(h('div', { class: 'title-topbar' }, actions, langs), h('div', { class: 'title-content' }, clk, h('h1', { html: _t('千年<span>虫</span> 2') }), h('div', { class: 'sub', text: D.trialLimit?.standalone ? '未寄出的明天 · 试玩版（序章至第三章）' : _t('未寄出的明天 · 梧城少年宫 · 1999—2009') }), menu, panel, window.QNC2TrialOnline?.mount() || (stats?.showOnTitle ? stats.mount(LANG) : null),
       h('div', { class: 'foot' }, h('div', { class: 'community', text: _t('QQ群') + '：1130040971' }), h('div', { text: _t('本作纯属虚构 · 建议用电脑上的 Chrome / Edge 打开 · 进度自动保存在本浏览器') }))));
     const collected = meta().endings || {};
     if (!D.trialLimit && window.openTimeMachine && ['A', 'B', 'C', 'H'].every(id => collected[id])) {
@@ -7910,6 +7874,7 @@ const Y2K = (() => {
     if (unlockRequest) openFullUnlock(new URLSearchParams(location.search).get('unlock') === 'continue');
     else if (location.hash === '#leaderboard') window.Y2KLeaderboard?.mount(titlePanel($('#title .title-panel-host'), _t('排行榜'), $('#title .leaderboard-entry') || $('#title .menu button:not(:disabled)')), LANG, !!meta().endings?.H);
     window.Y2KStats?.start();
+    window.QNC2TrialOnline?.start();
   }
 
   // 测试与调试用（浏览器控制台）
